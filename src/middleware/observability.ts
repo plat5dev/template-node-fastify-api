@@ -129,6 +129,33 @@ export const registerObservability = (app: FastifyInstance): void => {
       return reply.status(err.status).send(err.envelope(requestId))
     }
 
+    // Handler Zod.parse (JSON Schema/AJV does not apply .trim())
+    if (
+      err &&
+      typeof err === "object" &&
+      "issues" in err &&
+      Array.isArray((err as { issues: unknown }).issues)
+    ) {
+      const issues = (
+        err as {
+          issues: Array<{ path?: unknown[]; message?: string }>
+        }
+      ).issues
+      const fields = issues.map((issue) => ({
+        path: (issue.path ?? []).map(String).join(".") || "body",
+        message: issue.message ?? "invalid"
+      }))
+      const apiErr = new ApiError({
+        type: "invalid_request_error",
+        code: "VALIDATION_ERROR",
+        message: "Request validation failed",
+        details: { fields },
+        status: 422,
+        kind: "validation"
+      })
+      return reply.status(422).send(apiErr.envelope(requestId))
+    }
+
     if (err && typeof err === "object" && "validation" in err) {
       const validation = (
         err as { validation?: Array<{ instancePath?: string; message?: string }> }
