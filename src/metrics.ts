@@ -1,7 +1,11 @@
+import { metrics, type Counter, type Histogram } from "@opentelemetry/api"
 import client from "prom-client"
 
 const dbSystemName = "sqlite"
 const dbNamespace = "app"
+
+const HTTP_DURATION_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]
+const DB_DURATION_BUCKETS = [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1]
 
 let initialized = false
 
@@ -9,7 +13,7 @@ const httpDuration = new client.Histogram({
   name: "http_request_duration_seconds",
   help: "HTTP request duration in seconds",
   labelNames: ["method", "route"] as const,
-  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]
+  buckets: HTTP_DURATION_BUCKETS
 })
 
 const httpTotal = new client.Counter({
@@ -34,8 +38,49 @@ const dbOpsDuration = new client.Histogram({
   name: "db_operation_duration_seconds",
   help: "Database operation duration in seconds",
   labelNames: ["db_system_name", "db_operation_name", "db_namespace"] as const,
-  buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1]
+  buckets: DB_DURATION_BUCKETS
 })
+
+/** OTEL dual-write instruments (no-op until MeterProvider is installed). */
+type OtelInstruments = {
+  httpRequests: Counter
+  httpDuration: Histogram
+  dbOps: Counter
+  dbOpsErrors: Counter
+  dbOpsDuration: Histogram
+}
+
+let otel: OtelInstruments | undefined
+
+/**
+ * Create OTEL instruments after MeterProvider is set (gateway dual-write pattern).
+ * Safe to call when OTLP is off — instruments bind to the global (no-op) meter.
+ */
+export const initOtelInstruments = (): void => {
+  if (otel) return
+  const meter = metrics.getMeter("api")
+  otel = {
+    httpRequests: meter.createCounter("http_requests_total", {
+      description: "Total HTTP requests processed"
+    }),
+    httpDuration: meter.createHistogram("http_request_duration_seconds", {
+      description: "HTTP request duration in seconds",
+      unit: "s",
+      advice: { explicitBucketBoundaries: HTTP_DURATION_BUCKETS }
+    }),
+    dbOps: meter.createCounter("db_operations_total", {
+      description: "Total database operations"
+    }),
+    dbOpsErrors: meter.createCounter("db_operation_errors_total", {
+      description: "Total failed database operations"
+    }),
+    dbOpsDuration: meter.createHistogram("db_operation_duration_seconds", {
+      description: "Database operation duration in seconds",
+      unit: "s",
+      advice: { explicitBucketBoundaries: DB_DURATION_BUCKETS }
+    })
+  }
+}
 
 export const initMetrics = (): void => {
   if (initialized) return
@@ -57,8 +102,13 @@ export const observeRequest = (
   initMetrics()
   const r = route || "unknown"
   const m = method || "UNKNOWN"
-  httpTotal.inc({ method: m, route: r, status: String(status) })
+  const statusS = String(status)
+  httpTotal.inc({ method: m, route: r, status: statusS })
   httpDuration.observe({ method: m, route: r }, durationSeconds)
+  if (otel) {
+    otel.httpRequests.add(1, { method: m, route: r, status: statusS })
+    otel.httpDuration.record(durationSeconds, { method: m, route: r })
+  }
 }
 
 export const recordDbOperation = (
@@ -76,6 +126,11 @@ export const recordDbOperation = (
   dbOpsTotal.inc(labels)
   dbOpsDuration.observe(labels, durationSeconds)
   if (err) dbOpsErrors.inc(labels)
+  if (otel) {
+    otel.dbOps.add(1, labels)
+    otel.dbOpsDuration.record(durationSeconds, labels)
+    if (err) otel.dbOpsErrors.add(1, labels)
+  }
 }
 
 export const collectMetrics = async (): Promise<string> => {

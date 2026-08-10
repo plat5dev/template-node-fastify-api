@@ -17,6 +17,7 @@ import {
   ATTR_SERVICE_VERSION
 } from "@opentelemetry/semantic-conventions"
 import type { AppConfig } from "./config.js"
+import { initOtelInstruments } from "./metrics.js"
 
 const normalizeEndpoint = (base: string, suffix: string): string => {
   const trimmed = base.replace(/\/$/, "")
@@ -73,6 +74,8 @@ export const initTelemetry = (config: AppConfig): TelemetryHandle => {
   const enableMetricsOtlp = metricsOtlpEnabled(config)
 
   if (!enableTraces && !enableMetricsOtlp) {
+    // Still bind instruments so dual-write is a no-op against the global meter.
+    initOtelInstruments()
     return { shutdown: async () => undefined }
   }
 
@@ -107,6 +110,8 @@ export const initTelemetry = (config: AppConfig): TelemetryHandle => {
   })
 
   sdk.start()
+  // After MeterProvider is installed (gateway/route-registry pattern).
+  initOtelInstruments()
 
   return {
     shutdown: async () => {
