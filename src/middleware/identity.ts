@@ -3,14 +3,14 @@ import { internalError } from "../errors.js"
 
 export const USER_ID_HEADER = "x-user-id"
 export const ORGANIZATION_ID_HEADER = "x-organization-id"
-export const MEMBERSHIP_ID_HEADER = "x-membership-id"
+export const MEMBER_ID_HEADER = "x-member-id"
 export const REQUEST_ID_HEADER = "x-request-id"
 
 declare module "fastify" {
   interface FastifyRequest {
     userId?: string
     organizationId?: string
-    membershipId?: string
+    memberId?: string
   }
 }
 
@@ -35,12 +35,12 @@ export const requireUserHook = async (req: FastifyRequest): Promise<void> => {
 
 export const requireOrgHook = async (req: FastifyRequest): Promise<void> => {
   const organizationId = readHeader(req, ORGANIZATION_ID_HEADER)
-  const membershipId = readHeader(req, MEMBERSHIP_ID_HEADER)
-  if (!organizationId || !membershipId) {
+  const memberId = readHeader(req, MEMBER_ID_HEADER)
+  if (!organizationId || !memberId) {
     throw internalError(
-      "Missing expected identity headers X-Organization-Id and/or X-Membership-Id"
+      "Missing expected identity headers X-Organization-Id and/or X-Member-Id"
     )
   }
   req.organizationId = organizationId
-  req.membershipId = membershipId
+  req.memberId = memberId
 }

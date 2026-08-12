@@ -1,25 +1,23 @@
-import type { FastifyInstance } from "fastify"
 import { ulid } from "ulid"
-import { z } from "zod"
-import { zodToJsonSchema } from "zod-to-json-schema"
 import { notFound } from "../errors.js"
 import { requireOrgHook } from "../middleware/identity.js"
 import type { ProjectsStore } from "../projects/store.js"
 import {
+  projectParamsSchema,
   taskCreateSchema,
+  taskListSchema,
+  taskParamsSchema,
   taskSchema,
   taskUpdateSchema,
   type Task
 } from "../schemas/common.js"
+import type { App } from "../types.js"
 import type { TasksStore } from "./store.js"
 
 const now = () => new Date().toISOString()
 
-const jsonSchema = (schema: z.ZodTypeAny) =>
-  zodToJsonSchema(schema, { target: "openApi3", $refStrategy: "none" })
-
 export const registerTaskRoutes = (
-  app: FastifyInstance,
+  app: App,
   store: TasksStore,
   projects: ProjectsStore
 ): void => {
@@ -39,16 +37,14 @@ export const registerTaskRoutes = (
       {
         schema: {
           tags: ["Tasks"],
-          params: jsonSchema(
-            z.object({ organization_id: z.string(), project_id: z.string() })
-          ),
+          params: projectParamsSchema,
           response: {
-            200: jsonSchema(z.object({ tasks: z.array(taskSchema) }))
+            200: taskListSchema
           }
         }
       },
       async (req) => {
-        const { project_id } = req.params as { project_id: string }
+        const { project_id } = req.params
         requireProject(req.organizationId!, project_id)
         return { tasks: store.listByProject(req.organizationId!, project_id) }
       }
@@ -59,25 +55,23 @@ export const registerTaskRoutes = (
       {
         schema: {
           tags: ["Tasks"],
-          params: jsonSchema(
-            z.object({ organization_id: z.string(), project_id: z.string() })
-          ),
-          body: jsonSchema(taskCreateSchema),
-          response: { 201: jsonSchema(taskSchema) }
+          params: projectParamsSchema,
+          body: taskCreateSchema,
+          response: { 201: taskSchema }
         }
       },
       async (req, reply) => {
-        const { project_id } = req.params as { project_id: string }
+        const { project_id } = req.params
         requireProject(req.organizationId!, project_id)
-        const body = taskCreateSchema.parse(req.body)
+        const { title, status } = req.body
         const ts = now()
         const task: Task = {
           id: ulid(),
           organization_id: req.organizationId!,
           project_id,
-          title: body.title,
-          status: body.status ?? "todo",
-          created_by_membership_id: req.membershipId!,
+          title,
+          status: status ?? "todo",
+          created_by_member_id: req.memberId!,
           created_at: ts,
           updated_at: ts
         }
@@ -91,21 +85,12 @@ export const registerTaskRoutes = (
       {
         schema: {
           tags: ["Tasks"],
-          params: jsonSchema(
-            z.object({
-              organization_id: z.string(),
-              project_id: z.string(),
-              task_id: z.string()
-            })
-          ),
-          response: { 200: jsonSchema(taskSchema) }
+          params: taskParamsSchema,
+          response: { 200: taskSchema }
         }
       },
       async (req) => {
-        const { project_id, task_id } = req.params as {
-          project_id: string
-          task_id: string
-        }
+        const { project_id, task_id } = req.params
         requireProject(req.organizationId!, project_id)
         const task = store.findInProject(
           req.organizationId!,
@@ -122,24 +107,15 @@ export const registerTaskRoutes = (
       {
         schema: {
           tags: ["Tasks"],
-          params: jsonSchema(
-            z.object({
-              organization_id: z.string(),
-              project_id: z.string(),
-              task_id: z.string()
-            })
-          ),
-          body: jsonSchema(taskUpdateSchema),
-          response: { 200: jsonSchema(taskSchema) }
+          params: taskParamsSchema,
+          body: taskUpdateSchema,
+          response: { 200: taskSchema }
         }
       },
       async (req) => {
-        const { project_id, task_id } = req.params as {
-          project_id: string
-          task_id: string
-        }
+        const { project_id, task_id } = req.params
         requireProject(req.organizationId!, project_id)
-        const body = taskUpdateSchema.parse(req.body)
+        const { title, status } = req.body
         const existing = store.findInProject(
           req.organizationId!,
           project_id,
@@ -148,8 +124,8 @@ export const registerTaskRoutes = (
         if (!existing) throw notFound("task", task_id)
         const updated: Task = {
           ...existing,
-          title: body.title ?? existing.title,
-          status: body.status ?? existing.status,
+          title: title ?? existing.title,
+          status: status ?? existing.status,
           updated_at: now()
         }
         store.update(updated)
@@ -162,20 +138,11 @@ export const registerTaskRoutes = (
       {
         schema: {
           tags: ["Tasks"],
-          params: jsonSchema(
-            z.object({
-              organization_id: z.string(),
-              project_id: z.string(),
-              task_id: z.string()
-            })
-          )
+          params: taskParamsSchema
         }
       },
       async (req, reply) => {
-        const { project_id, task_id } = req.params as {
-          project_id: string
-          task_id: string
-        }
+        const { project_id, task_id } = req.params
         requireProject(req.organizationId!, project_id)
         const existing = store.findInProject(
           req.organizationId!,

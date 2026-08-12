@@ -1,5 +1,6 @@
 import "dotenv/config"
 import Fastify from "fastify"
+import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox"
 import swagger from "@fastify/swagger"
 import swaggerUi from "@fastify/swagger-ui"
 import { createServer } from "node:http"
@@ -30,7 +31,7 @@ const app = Fastify({
   logger: false,
   // No CORS — gateway owns it (plat5 gateway-contract)
   trustProxy: true
-})
+}).withTypeProvider<TypeBoxTypeProvider>()
 
 registerObservability(app)
 

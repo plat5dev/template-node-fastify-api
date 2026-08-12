@@ -1,5 +1,5 @@
 name: node-fastify-api
-description: Node + Fastify + Zod reference API (profiles, projects, tasks)
+description: Node + Fastify + TypeBox reference API (profiles, projects, tasks)
 
 upstreams:
   api: "3000"

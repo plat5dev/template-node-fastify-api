@@ -9,7 +9,7 @@ export class ProjectsStore {
     return trackDb("projects.list", () => {
       return this.db
         .prepare(
-          `SELECT id, organization_id, name, description, created_by_membership_id, created_at, updated_at
+          `SELECT id, organization_id, name, description, created_by_member_id, created_at, updated_at
            FROM projects WHERE organization_id = ? ORDER BY created_at DESC`
         )
         .all(organizationId) as Project[]
@@ -20,7 +20,7 @@ export class ProjectsStore {
     return trackDb("projects.find", () => {
       const row = this.db
         .prepare(
-          `SELECT id, organization_id, name, description, created_by_membership_id, created_at, updated_at
+          `SELECT id, organization_id, name, description, created_by_member_id, created_at, updated_at
            FROM projects WHERE id = ? AND organization_id = ?`
         )
         .get(projectId, organizationId) as Project | undefined
@@ -32,7 +32,7 @@ export class ProjectsStore {
     trackDb("projects.insert", () => {
       this.db
         .prepare(
-          `INSERT INTO projects (id, organization_id, name, description, created_by_membership_id, created_at, updated_at)
+          `INSERT INTO projects (id, organization_id, name, description, created_by_member_id, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
@@ -40,7 +40,7 @@ export class ProjectsStore {
           p.organization_id,
           p.name,
           p.description,
-          p.created_by_membership_id,
+          p.created_by_member_id,
           p.created_at,
           p.updated_at
         )

@@ -29,7 +29,7 @@ export const migrate = (db: Db): void => {
       organization_id TEXT NOT NULL,
       name TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
-      created_by_membership_id TEXT NOT NULL,
+      created_by_member_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -43,7 +43,7 @@ export const migrate = (db: Db): void => {
       project_id TEXT NOT NULL,
       title TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'todo',
-      created_by_membership_id TEXT NOT NULL,
+      created_by_member_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE

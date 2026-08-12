@@ -1,62 +1,94 @@
-import { z } from "zod"
+import { type Static, Type } from "@sinclair/typebox"
 
-export const profileSchema = z.object({
-  user_id: z.string(),
-  display_name: z.string(),
-  bio: z.string(),
-  created_at: z.string(),
-  updated_at: z.string()
+const nonEmptyString = (maxLength = 255) =>
+  Type.String({ minLength: 1, maxLength, pattern: "\\S" })
+
+export const profileSchema = Type.Object({
+  user_id: Type.String(),
+  display_name: Type.String(),
+  bio: Type.String(),
+  created_at: Type.String(),
+  updated_at: Type.String()
 })
 
-export const profileUpdateSchema = z.object({
-  display_name: z.string().trim().min(1).max(255),
-  bio: z.string().max(2000).optional()
+export const profileUpdateSchema = Type.Object({
+  display_name: nonEmptyString(),
+  bio: Type.Optional(Type.String({ maxLength: 2000 }))
 })
 
-export const projectSchema = z.object({
-  id: z.string(),
-  organization_id: z.string(),
-  name: z.string(),
-  description: z.string(),
-  created_by_membership_id: z.string(),
-  created_at: z.string(),
-  updated_at: z.string()
+export const projectSchema = Type.Object({
+  id: Type.String(),
+  organization_id: Type.String(),
+  name: Type.String(),
+  description: Type.String(),
+  created_by_member_id: Type.String(),
+  created_at: Type.String(),
+  updated_at: Type.String()
 })
 
-export const projectCreateSchema = z.object({
-  name: z.string().trim().min(1).max(255),
-  description: z.string().max(2000).optional()
+export const projectCreateSchema = Type.Object({
+  name: nonEmptyString(),
+  description: Type.Optional(Type.String({ maxLength: 2000 }))
 })
 
-export const projectUpdateSchema = z.object({
-  name: z.string().trim().min(1).max(255).optional(),
-  description: z.string().max(2000).optional()
+export const projectUpdateSchema = Type.Object({
+  name: Type.Optional(nonEmptyString()),
+  description: Type.Optional(Type.String({ maxLength: 2000 }))
 })
 
-export const taskStatusSchema = z.enum(["todo", "in_progress", "done"])
+export const taskStatusSchema = Type.Union([
+  Type.Literal("todo"),
+  Type.Literal("in_progress"),
+  Type.Literal("done")
+])
 
-export const taskSchema = z.object({
-  id: z.string(),
-  organization_id: z.string(),
-  project_id: z.string(),
-  title: z.string(),
+export const taskSchema = Type.Object({
+  id: Type.String(),
+  organization_id: Type.String(),
+  project_id: Type.String(),
+  title: Type.String(),
   status: taskStatusSchema,
-  created_by_membership_id: z.string(),
-  created_at: z.string(),
-  updated_at: z.string()
+  created_by_member_id: Type.String(),
+  created_at: Type.String(),
+  updated_at: Type.String()
 })
 
-export const taskCreateSchema = z.object({
-  title: z.string().trim().min(1).max(255),
-  status: taskStatusSchema.optional()
+export const taskCreateSchema = Type.Object({
+  title: nonEmptyString(),
+  status: Type.Optional(taskStatusSchema)
 })
 
-export const taskUpdateSchema = z.object({
-  title: z.string().trim().min(1).max(255).optional(),
-  status: taskStatusSchema.optional()
+export const taskUpdateSchema = Type.Object({
+  title: Type.Optional(nonEmptyString()),
+  status: Type.Optional(taskStatusSchema)
 })
 
-export type Profile = z.infer<typeof profileSchema>
-export type Project = z.infer<typeof projectSchema>
-export type Task = z.infer<typeof taskSchema>
-export type TaskStatus = z.infer<typeof taskStatusSchema>
+export const profileParamsSchema = Type.Object({ user_id: Type.String() })
+
+export const organizationParamsSchema = Type.Object({
+  organization_id: Type.String()
+})
+
+export const projectParamsSchema = Type.Object({
+  organization_id: Type.String(),
+  project_id: Type.String()
+})
+
+export const taskParamsSchema = Type.Object({
+  organization_id: Type.String(),
+  project_id: Type.String(),
+  task_id: Type.String()
+})
+
+export const projectListSchema = Type.Object({
+  projects: Type.Array(projectSchema)
+})
+
+export const taskListSchema = Type.Object({
+  tasks: Type.Array(taskSchema)
+})
+
+export type Profile = Static<typeof profileSchema>
+export type Project = Static<typeof projectSchema>
+export type Task = Static<typeof taskSchema>
+export type TaskStatus = Static<typeof taskStatusSchema>

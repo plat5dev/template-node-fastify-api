@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify"
+import type { FastifyRequest } from "fastify"
 import {
   context,
   propagation,
@@ -8,8 +8,9 @@ import {
 } from "@opentelemetry/api"
 import { ApiError } from "../errors.js"
 import { observeRequest } from "../metrics.js"
+import type { App } from "../types.js"
 import {
-  MEMBERSHIP_ID_HEADER,
+  MEMBER_ID_HEADER,
   ORGANIZATION_ID_HEADER,
   REQUEST_ID_HEADER,
   USER_ID_HEADER,
@@ -40,7 +41,7 @@ type ReqState = {
 
 const state = new WeakMap<FastifyRequest, ReqState>()
 
-export const registerObservability = (app: FastifyInstance): void => {
+export const registerObservability = (app: App): void => {
   app.addHook("onRequest", async (req) => {
     const carrier: Record<string, string> = {}
     for (const [k, v] of Object.entries(req.headers)) {
@@ -69,8 +70,8 @@ export const registerObservability = (app: FastifyInstance): void => {
     if (userId) span.setAttribute("user.id", userId)
     const organizationId = readHeader(req, ORGANIZATION_ID_HEADER)
     if (organizationId) span.setAttribute("organization.id", organizationId)
-    const membershipId = readHeader(req, MEMBERSHIP_ID_HEADER)
-    if (membershipId) span.setAttribute("membership.id", membershipId)
+    const memberId = readHeader(req, MEMBER_ID_HEADER)
+    if (memberId) span.setAttribute("member.id", memberId)
   })
 
   app.addHook("onResponse", async (req, reply) => {
@@ -106,10 +107,10 @@ export const registerObservability = (app: FastifyInstance): void => {
     }
     const userId = readHeader(req, USER_ID_HEADER)
     const organizationId = readHeader(req, ORGANIZATION_ID_HEADER)
-    const membershipId = readHeader(req, MEMBERSHIP_ID_HEADER)
+    const memberId = readHeader(req, MEMBER_ID_HEADER)
     if (userId) line.user_id = userId
     if (organizationId) line.organization_id = organizationId
-    if (membershipId) line.membership_id = membershipId
+    if (memberId) line.member_id = memberId
     if (status >= 500) {
       line.error_kind = "internal"
       line.error_message = "request failed"
@@ -129,33 +130,7 @@ export const registerObservability = (app: FastifyInstance): void => {
       return reply.status(err.status).send(err.envelope(requestId))
     }
 
-    // Handler Zod.parse (JSON Schema/AJV does not apply .trim())
-    if (
-      err &&
-      typeof err === "object" &&
-      "issues" in err &&
-      Array.isArray((err as { issues: unknown }).issues)
-    ) {
-      const issues = (
-        err as {
-          issues: Array<{ path?: unknown[]; message?: string }>
-        }
-      ).issues
-      const fields = issues.map((issue) => ({
-        path: (issue.path ?? []).map(String).join(".") || "body",
-        message: issue.message ?? "invalid"
-      }))
-      const apiErr = new ApiError({
-        type: "invalid_request_error",
-        code: "VALIDATION_ERROR",
-        message: "Request validation failed",
-        details: { fields },
-        status: 422,
-        kind: "validation"
-      })
-      return reply.status(422).send(apiErr.envelope(requestId))
-    }
-
+    // Fastify request validation (JSON Schema/AJV) failures
     if (err && typeof err === "object" && "validation" in err) {
       const validation = (
         err as { validation?: Array<{ instancePath?: string; message?: string }> }

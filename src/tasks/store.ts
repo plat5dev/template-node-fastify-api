@@ -9,7 +9,7 @@ export class TasksStore {
     return trackDb("tasks.list", () => {
       return this.db
         .prepare(
-          `SELECT id, organization_id, project_id, title, status, created_by_membership_id, created_at, updated_at
+          `SELECT id, organization_id, project_id, title, status, created_by_member_id, created_at, updated_at
            FROM tasks WHERE organization_id = ? AND project_id = ?
            ORDER BY created_at DESC`
         )
@@ -25,7 +25,7 @@ export class TasksStore {
     return trackDb("tasks.find", () => {
       const row = this.db
         .prepare(
-          `SELECT id, organization_id, project_id, title, status, created_by_membership_id, created_at, updated_at
+          `SELECT id, organization_id, project_id, title, status, created_by_member_id, created_at, updated_at
            FROM tasks WHERE id = ? AND organization_id = ? AND project_id = ?`
         )
         .get(taskId, organizationId, projectId) as Task | undefined
@@ -37,7 +37,7 @@ export class TasksStore {
     trackDb("tasks.insert", () => {
       this.db
         .prepare(
-          `INSERT INTO tasks (id, organization_id, project_id, title, status, created_by_membership_id, created_at, updated_at)
+          `INSERT INTO tasks (id, organization_id, project_id, title, status, created_by_member_id, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
@@ -46,7 +46,7 @@ export class TasksStore {
           t.project_id,
           t.title,
           t.status,
-          t.created_by_membership_id,
+          t.created_by_member_id,
           t.created_at,
           t.updated_at
         )
