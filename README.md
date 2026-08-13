@@ -33,7 +33,7 @@ mkdir my-app && cd my-app
 plat5 init --template node-fastify-api --auth -y
 
 pnpm install
-plat5 start          # gateway :5001, registry :5002, applies routes.yml
+plat5 start          # gateway :5001, registry :5002, applies routes.identity.yml + routes.yml
 pnpm run dev         # API :3000, health :3001
 ```
 
@@ -131,7 +131,8 @@ src/
   middleware/             # identity headers, access log, spans
   schemas/                # Zod models
   profiles|projects|tasks/  # routes + store
-routes.yml                # gateway scopes (route_prefix per scope)
+routes.identity.yml       # identity public surface (edit or omit)
+routes.yml                # app gateway scopes (route_prefix per scope)
 ```
 
 ## Plat5 contracts (do / don't)
