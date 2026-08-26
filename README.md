@@ -1,6 +1,6 @@
 # Node + Fastify API template
 
-Reference Plat5 business service: **Node.js** + **pnpm**, **Fastify**, **Zod**, SQLite via **better-sqlite3**.
+Reference Plat5 business service: **Node.js** + **pnpm**, **Fastify**, **TypeBox**, SQLite via **better-sqlite3**.
 
 Gateway authenticates. This service trusts identity headers and owns business logic only.
 
@@ -10,7 +10,7 @@ Gateway authenticates. This service trusts identity headers and owns business lo
 |-------|--------|
 | Runtime / installs | Node 22+ / pnpm |
 | HTTP | Fastify 5 |
-| Schema | Zod (+ `@fastify/swagger` OpenAPI) |
+| Schema | TypeBox (+ `@fastify/swagger` OpenAPI) |
 | DB | SQLite via `better-sqlite3` |
 | Dev | `tsx watch` |
 | Prod | `tsc` → `node dist/main.js` |
@@ -129,7 +129,7 @@ src/
   metrics.ts              # prom-client scrape + HTTP/DB metrics
   errors.ts               # Plat5 error envelope
   middleware/             # identity headers, access log, spans
-  schemas/                # Zod models
+  schemas/                # TypeBox models
   profiles|projects|tasks/  # routes + store
 routes.identity.yml       # identity public surface (edit or omit)
 routes.yml                # app gateway scopes (route_prefix per scope)
