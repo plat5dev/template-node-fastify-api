@@ -1,3 +1,4 @@
+import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
 import { ulid } from "ulid"
 import { notFound } from "../errors.js"
 import { requireOrgHook } from "../middleware/identity.js"
@@ -21,7 +22,7 @@ export const registerTaskRoutes = (
   store: TasksStore,
   projects: ProjectsStore
 ): void => {
-  app.register(async (scope) => {
+  const plugin: FastifyPluginAsyncTypebox = async (scope) => {
     scope.addHook("preHandler", requireOrgHook)
 
     const base =
@@ -154,5 +155,6 @@ export const registerTaskRoutes = (
         return reply.status(204).send()
       }
     )
-  })
+  }
+  app.register(plugin)
 }

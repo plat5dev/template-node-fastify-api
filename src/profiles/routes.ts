@@ -1,3 +1,4 @@
+import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
 import { notFound } from "../errors.js"
 import { requireUserHook } from "../middleware/identity.js"
 import {
@@ -12,7 +13,7 @@ import type { ProfilesStore } from "./store.js"
 const now = () => new Date().toISOString()
 
 export const registerProfileRoutes = (app: App, store: ProfilesStore): void => {
-  app.register(async (scope) => {
+  const plugin: FastifyPluginAsyncTypebox = async (scope) => {
     scope.addHook("preHandler", requireUserHook)
 
     scope.get(
@@ -92,5 +93,6 @@ export const registerProfileRoutes = (app: App, store: ProfilesStore): void => {
         return profile
       }
     )
-  })
+  }
+  app.register(plugin)
 }
