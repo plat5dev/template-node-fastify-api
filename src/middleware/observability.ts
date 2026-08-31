@@ -3,6 +3,7 @@ import {
   context,
   propagation,
   type Span,
+  SpanKind,
   SpanStatusCode,
   trace
 } from "@opentelemetry/api"
@@ -37,9 +38,36 @@ export const normalizeRoute = (path: string): string => {
 type ReqState = {
   started: number
   span: Span
+  errorKind?: string
 }
 
 const state = new WeakMap<FastifyRequest, ReqState>()
+
+const pathOf = (url: string): string => url.split("?")[0] ?? url
+
+const queryOf = (url: string): string | undefined => {
+  const q = url.split("?")[1]
+  return q || undefined
+}
+
+const stampTrace = (
+  line: Record<string, unknown>,
+  span: Span | undefined
+): void => {
+  if (!span) return
+  const sc = span.spanContext()
+  if (!trace.isSpanContextValid(sc)) return
+  line.trace_id = sc.traceId
+  line.span_id = sc.spanId
+}
+
+const applyHttpStatus = (span: Span, status: number, errorKind?: string): void => {
+  span.setAttribute("http.response.status_code", status)
+  if (status < 500) return
+  span.setAttribute("error.kind", errorKind ?? "internal")
+  span.setAttribute("error.type", String(status))
+  span.setStatus({ code: SpanStatusCode.ERROR })
+}
 
 export const registerObservability = (app: App): void => {
   app.addHook("onRequest", async (req) => {
@@ -50,18 +78,24 @@ export const registerObservability = (app: App): void => {
     }
     const parentCtx = propagation.extract(context.active(), carrier)
     const tracer = trace.getTracer("api")
-    const route = req.routeOptions.url ?? normalizeRoute(req.url)
+    const path = pathOf(req.url)
+    const template = req.routeOptions.url
+    const spanName = template ? `${req.method} ${template}` : req.method
     const span = tracer.startSpan(
-      `${req.method} ${route}`,
+      spanName,
       {
+        kind: SpanKind.SERVER,
         attributes: {
-          "http.method": req.method,
-          "http.route": route,
-          "url.path": req.url.split("?")[0] ?? req.url
+          "http.request.method": req.method,
+          "url.path": path,
+          "url.scheme": req.protocol
         }
       },
       parentCtx
     )
+    if (template) span.setAttribute("http.route", template)
+    const query = queryOf(req.url)
+    if (query) span.setAttribute("url.query", query)
     state.set(req, { started: performance.now(), span })
 
     const requestId = readHeader(req, REQUEST_ID_HEADER)
@@ -87,11 +121,12 @@ export const registerObservability = (app: App): void => {
     observeRequest(req.method, route, status, durationSeconds)
 
     if (s?.span) {
-      s.span.setAttribute("http.status_code", status)
-      if (status >= 500) {
-        s.span.setAttribute("error.kind", "internal")
-        s.span.setStatus({ code: SpanStatusCode.ERROR, message: "request failed" })
+      const template = req.routeOptions.url
+      if (template) {
+        s.span.updateName(`${req.method} ${template}`)
+        s.span.setAttribute("http.route", template)
       }
+      applyHttpStatus(s.span, status, s.errorKind)
       s.span.end()
     }
 
@@ -115,6 +150,7 @@ export const registerObservability = (app: App): void => {
       line.error_kind = "internal"
       line.error_message = "request failed"
     }
+    stampTrace(line, s?.span)
     console.log(JSON.stringify(line))
   })
 
@@ -123,9 +159,9 @@ export const registerObservability = (app: App): void => {
     const s = state.get(req)
 
     if (err instanceof ApiError) {
-      if (err.status >= 500 && s?.span) {
-        s.span.setAttribute("error.kind", err.kind)
-        s.span.setStatus({ code: SpanStatusCode.ERROR, message: err.message })
+      if (err.status >= 500 && s) {
+        s.errorKind = err.kind
+        applyHttpStatus(s.span, err.status, err.kind)
       }
       return reply.status(err.status).send(err.envelope(requestId))
     }
@@ -151,12 +187,9 @@ export const registerObservability = (app: App): void => {
       return reply.status(422).send(apiErr.envelope(requestId))
     }
 
-    if (s?.span) {
-      s.span.setAttribute("error.kind", "internal")
-      s.span.setStatus({
-        code: SpanStatusCode.ERROR,
-        message: err instanceof Error ? err.message : "request failed"
-      })
+    if (s) {
+      s.errorKind = "internal"
+      applyHttpStatus(s.span, 500, "internal")
     }
 
     const apiErr = new ApiError({
