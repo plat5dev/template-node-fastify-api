@@ -45,11 +45,6 @@ const state = new WeakMap<FastifyRequest, ReqState>()
 
 const pathOf = (url: string): string => url.split("?")[0] ?? url
 
-const queryOf = (url: string): string | undefined => {
-  const q = url.split("?")[1]
-  return q || undefined
-}
-
 const stampTrace = (
   line: Record<string, unknown>,
   span: Span | undefined
@@ -65,7 +60,6 @@ const applyHttpStatus = (span: Span, status: number, errorKind?: string): void =
   span.setAttribute("http.response.status_code", status)
   if (status < 500) return
   span.setAttribute("error.kind", errorKind ?? "internal")
-  span.setAttribute("error.type", String(status))
   span.setStatus({ code: SpanStatusCode.ERROR })
 }
 
@@ -87,15 +81,12 @@ export const registerObservability = (app: App): void => {
         kind: SpanKind.SERVER,
         attributes: {
           "http.request.method": req.method,
-          "url.path": path,
-          "url.scheme": req.protocol
+          "url.path": path
         }
       },
       parentCtx
     )
     if (template) span.setAttribute("http.route", template)
-    const query = queryOf(req.url)
-    if (query) span.setAttribute("url.query", query)
     state.set(req, { started: performance.now(), span })
 
     const requestId = readHeader(req, REQUEST_ID_HEADER)
