@@ -65,17 +65,20 @@ export const taskUpdateSchema = Type.Object({
 
 export const profileParamsSchema = Type.Object({ user_id: Type.String() })
 
-export const organizationParamsSchema = Type.Object({
-  organization_id: Type.String()
+export const memberParamsSchema = Type.Object({
+  organization_id: Type.String(),
+  member_id: Type.String()
 })
 
 export const projectParamsSchema = Type.Object({
   organization_id: Type.String(),
+  member_id: Type.String(),
   project_id: Type.String()
 })
 
 export const taskParamsSchema = Type.Object({
   organization_id: Type.String(),
+  member_id: Type.String(),
   project_id: Type.String(),
   task_id: Type.String()
 })

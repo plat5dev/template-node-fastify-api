@@ -1,7 +1,6 @@
 import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
 import { ulid } from "ulid"
 import { notFound } from "../errors.js"
-import { requireOrgHook } from "../middleware/identity.js"
 import type { ProjectsStore } from "../projects/store.js"
 import {
   projectParamsSchema,
@@ -23,10 +22,8 @@ export const registerTaskRoutes = (
   projects: ProjectsStore
 ): void => {
   const plugin: FastifyPluginAsyncTypebox = async (scope) => {
-    scope.addHook("preHandler", requireOrgHook)
-
     const base =
-      "/api/organizations/:organization_id/projects/:project_id/tasks"
+      "/organizations/:organization_id/members/:member_id/projects/:project_id/tasks"
 
     const requireProject = (organizationId: string, projectId: string) => {
       const project = projects.findInOrg(organizationId, projectId)
@@ -45,9 +42,9 @@ export const registerTaskRoutes = (
         }
       },
       async (req) => {
-        const { project_id } = req.params
-        requireProject(req.organizationId!, project_id)
-        return { tasks: store.listByProject(req.organizationId!, project_id) }
+        const { organization_id, project_id } = req.params
+        requireProject(organization_id, project_id)
+        return { tasks: store.listByProject(organization_id, project_id) }
       }
     )
 
@@ -62,17 +59,17 @@ export const registerTaskRoutes = (
         }
       },
       async (req, reply) => {
-        const { project_id } = req.params
-        requireProject(req.organizationId!, project_id)
+        const { organization_id, member_id, project_id } = req.params
+        requireProject(organization_id, project_id)
         const { title, status } = req.body
         const ts = now()
         const task: Task = {
           id: ulid(),
-          organization_id: req.organizationId!,
+          organization_id,
           project_id,
           title,
           status: status ?? "todo",
-          created_by_member_id: req.memberId!,
+          created_by_member_id: member_id,
           created_at: ts,
           updated_at: ts
         }
@@ -91,13 +88,9 @@ export const registerTaskRoutes = (
         }
       },
       async (req) => {
-        const { project_id, task_id } = req.params
-        requireProject(req.organizationId!, project_id)
-        const task = store.findInProject(
-          req.organizationId!,
-          project_id,
-          task_id
-        )
+        const { organization_id, project_id, task_id } = req.params
+        requireProject(organization_id, project_id)
+        const task = store.findInProject(organization_id, project_id, task_id)
         if (!task) throw notFound("task", task_id)
         return task
       }
@@ -114,11 +107,11 @@ export const registerTaskRoutes = (
         }
       },
       async (req) => {
-        const { project_id, task_id } = req.params
-        requireProject(req.organizationId!, project_id)
+        const { organization_id, project_id, task_id } = req.params
+        requireProject(organization_id, project_id)
         const { title, status } = req.body
         const existing = store.findInProject(
-          req.organizationId!,
+          organization_id,
           project_id,
           task_id
         )
@@ -143,15 +136,15 @@ export const registerTaskRoutes = (
         }
       },
       async (req, reply) => {
-        const { project_id, task_id } = req.params
-        requireProject(req.organizationId!, project_id)
+        const { organization_id, project_id, task_id } = req.params
+        requireProject(organization_id, project_id)
         const existing = store.findInProject(
-          req.organizationId!,
+          organization_id,
           project_id,
           task_id
         )
         if (!existing) throw notFound("task", task_id)
-        store.delete(req.organizationId!, project_id, task_id)
+        store.delete(organization_id, project_id, task_id)
         return reply.status(204).send()
       }
     )

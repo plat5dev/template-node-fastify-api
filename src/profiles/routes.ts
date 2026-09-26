@@ -1,6 +1,4 @@
 import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
-import { notFound } from "../errors.js"
-import { requireUserHook } from "../middleware/identity.js"
 import {
   profileParamsSchema,
   profileSchema,
@@ -14,23 +12,22 @@ const now = () => new Date().toISOString()
 
 export const registerProfileRoutes = (app: App, store: ProfilesStore): void => {
   const plugin: FastifyPluginAsyncTypebox = async (scope) => {
-    scope.addHook("preHandler", requireUserHook)
-
     scope.get(
-      "/api/profiles/me",
+      "/users/:user_id/profile",
       {
         schema: {
           tags: ["Profiles"],
+          params: profileParamsSchema,
           response: { 200: profileSchema }
         }
       },
       async (req) => {
-        const userId = req.userId!
-        const existing = store.findByUserId(userId)
+        const { user_id } = req.params
+        const existing = store.findByUserId(user_id)
         if (existing) return existing
         const ts = now()
         const created: Profile = {
-          user_id: userId,
+          user_id,
           display_name: "Anonymous",
           bio: "",
           created_at: ts,
@@ -42,19 +39,20 @@ export const registerProfileRoutes = (app: App, store: ProfilesStore): void => {
     )
 
     scope.put(
-      "/api/profiles/me",
+      "/users/:user_id/profile",
       {
         schema: {
           tags: ["Profiles"],
+          params: profileParamsSchema,
           body: profileUpdateSchema,
           response: { 200: profileSchema }
         }
       },
       async (req) => {
         const { display_name, bio } = req.body
-        const userId = req.userId!
+        const { user_id } = req.params
         const ts = now()
-        const existing = store.findByUserId(userId)
+        const existing = store.findByUserId(user_id)
         if (existing) {
           const updated: Profile = {
             ...existing,
@@ -66,7 +64,7 @@ export const registerProfileRoutes = (app: App, store: ProfilesStore): void => {
           return updated
         }
         const created: Profile = {
-          user_id: userId,
+          user_id,
           display_name,
           bio: bio ?? "",
           created_at: ts,
@@ -74,23 +72,6 @@ export const registerProfileRoutes = (app: App, store: ProfilesStore): void => {
         }
         store.insert(created)
         return created
-      }
-    )
-
-    scope.get(
-      "/api/profiles/:user_id",
-      {
-        schema: {
-          tags: ["Profiles"],
-          params: profileParamsSchema,
-          response: { 200: profileSchema }
-        }
-      },
-      async (req) => {
-        const { user_id } = req.params
-        const profile = store.findByUserId(user_id)
-        if (!profile) throw notFound("profile", user_id)
-        return profile
       }
     )
   }

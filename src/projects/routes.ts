@@ -1,9 +1,8 @@
 import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
 import { ulid } from "ulid"
 import { notFound } from "../errors.js"
-import { requireOrgHook } from "../middleware/identity.js"
 import {
-  organizationParamsSchema,
+  memberParamsSchema,
   projectCreateSchema,
   projectListSchema,
   projectParamsSchema,
@@ -18,23 +17,22 @@ const now = () => new Date().toISOString()
 
 export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
   const plugin: FastifyPluginAsyncTypebox = async (scope) => {
-    scope.addHook("preHandler", requireOrgHook)
-
-    const base = "/api/organizations/:organization_id/projects"
+    const base = "/organizations/:organization_id/members/:member_id/projects"
 
     scope.get(
       base,
       {
         schema: {
           tags: ["Projects"],
-          params: organizationParamsSchema,
+          params: memberParamsSchema,
           response: {
             200: projectListSchema
           }
         }
       },
       async (req) => {
-        const projects = store.listByOrg(req.organizationId!)
+        const { organization_id } = req.params
+        const projects = store.listByOrg(organization_id)
         return { projects }
       }
     )
@@ -44,20 +42,21 @@ export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
       {
         schema: {
           tags: ["Projects"],
-          params: organizationParamsSchema,
+          params: memberParamsSchema,
           body: projectCreateSchema,
           response: { 201: projectSchema }
         }
       },
       async (req, reply) => {
         const { name, description } = req.body
+        const { organization_id, member_id } = req.params
         const ts = now()
         const project: Project = {
           id: ulid(),
-          organization_id: req.organizationId!,
+          organization_id,
           name,
           description: description ?? "",
-          created_by_member_id: req.memberId!,
+          created_by_member_id: member_id,
           created_at: ts,
           updated_at: ts
         }
@@ -76,8 +75,8 @@ export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
         }
       },
       async (req) => {
-        const { project_id } = req.params
-        const project = store.findInOrg(req.organizationId!, project_id)
+        const { organization_id, project_id } = req.params
+        const project = store.findInOrg(organization_id, project_id)
         if (!project) throw notFound("project", project_id)
         return project
       }
@@ -94,9 +93,9 @@ export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
         }
       },
       async (req) => {
-        const { project_id } = req.params
+        const { organization_id, project_id } = req.params
         const { name, description } = req.body
-        const existing = store.findInOrg(req.organizationId!, project_id)
+        const existing = store.findInOrg(organization_id, project_id)
         if (!existing) throw notFound("project", project_id)
         const updated: Project = {
           ...existing,
@@ -118,10 +117,10 @@ export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
         }
       },
       async (req, reply) => {
-        const { project_id } = req.params
-        const existing = store.findInOrg(req.organizationId!, project_id)
+        const { organization_id, project_id } = req.params
+        const existing = store.findInOrg(organization_id, project_id)
         if (!existing) throw notFound("project", project_id)
-        store.delete(req.organizationId!, project_id)
+        store.delete(organization_id, project_id)
         return reply.status(204).send()
       }
     )

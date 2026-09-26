@@ -10,14 +10,26 @@ import {
 import { ApiError } from "../errors.js"
 import { observeRequest } from "../metrics.js"
 import type { App } from "../types.js"
-import {
-  MEMBER_ID_HEADER,
-  ORGANIZATION_ID_HEADER,
-  REQUEST_ID_HEADER,
-  USER_ID_HEADER,
-  readHeader,
-  requestIdOf
-} from "./identity.js"
+
+const REQUEST_ID_HEADER = "x-request-id"
+
+const readHeader = (req: FastifyRequest, name: string): string | undefined => {
+  const value = req.headers[name]
+  if (typeof value === "string" && value.trim() !== "") return value
+  if (Array.isArray(value) && value[0] && value[0].trim() !== "") return value[0]
+  return undefined
+}
+
+const requestIdOf = (req: FastifyRequest): string | null =>
+  readHeader(req, REQUEST_ID_HEADER) ?? null
+
+/** Path param on the matched route, when that route has it. */
+const pathParam = (req: FastifyRequest, name: string): string | undefined => {
+  const params = req.params
+  if (typeof params !== "object" || params === null) return undefined
+  const value = (params as Record<string, unknown>)[name]
+  return typeof value === "string" && value !== "" ? value : undefined
+}
 
 const ULID_OR_UUID =
   /^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
@@ -91,12 +103,6 @@ export const registerObservability = (app: App): void => {
 
     const requestId = readHeader(req, REQUEST_ID_HEADER)
     if (requestId) span.setAttribute("request_id", requestId)
-    const userId = readHeader(req, USER_ID_HEADER)
-    if (userId) span.setAttribute("user.id", userId)
-    const organizationId = readHeader(req, ORGANIZATION_ID_HEADER)
-    if (organizationId) span.setAttribute("organization.id", organizationId)
-    const memberId = readHeader(req, MEMBER_ID_HEADER)
-    if (memberId) span.setAttribute("member.id", memberId)
   })
 
   app.addHook("onResponse", async (req, reply) => {
@@ -111,12 +117,19 @@ export const registerObservability = (app: App): void => {
 
     observeRequest(req.method, route, status, durationSeconds)
 
+    const userId = pathParam(req, "user_id")
+    const organizationId = pathParam(req, "organization_id")
+    const memberId = pathParam(req, "member_id")
+
     if (s?.span) {
       const template = req.routeOptions.url
       if (template) {
         s.span.updateName(`${req.method} ${template}`)
         s.span.setAttribute("http.route", template)
       }
+      if (userId) s.span.setAttribute("user.id", userId)
+      if (organizationId) s.span.setAttribute("organization.id", organizationId)
+      if (memberId) s.span.setAttribute("member.id", memberId)
       applyHttpStatus(s.span, status, s.errorKind)
       s.span.end()
     }
@@ -131,9 +144,6 @@ export const registerObservability = (app: App): void => {
       duration_ms: durationMs,
       request_id: requestIdOf(req)
     }
-    const userId = readHeader(req, USER_ID_HEADER)
-    const organizationId = readHeader(req, ORGANIZATION_ID_HEADER)
-    const memberId = readHeader(req, MEMBER_ID_HEADER)
     if (userId) line.user_id = userId
     if (organizationId) line.organization_id = organizationId
     if (memberId) line.member_id = memberId
