@@ -66,7 +66,7 @@ pnpm run check   # tsc --noEmit
 
 ## Environment
 
-See `.env.example`. Load with your process manager or `export $(grep -v '^#' .env | xargs)`.
+See `.env.example`. `dotenv` loads `.env` automatically.
 
 | Variable | Default | Notes |
 |----------|---------|-------|
@@ -85,7 +85,8 @@ See `.env.example`. Load with your process manager or `export $(grep -v '^#' .en
 | `OTEL_METRICS_EXPORTER` | `otlp` when endpoint set | Set `prometheus` to push-off; `/metrics` always on |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `30000` | ms (OTLP metrics) |
 | `OTEL_SDK_DISABLED` | `false` | Force OTLP off; stdout + `/metrics` remain |
-| `DEPLOYMENT_ENV` | `development` | Resource `deployment.environment` |
+| `OTEL_TRACES_SAMPLER_RATIO` | `1` | Trace sampling ratio |
+| `DEPLOYMENT_ENV` / `OTEL_DEPLOYMENT_ENV` | `development` | Resource `deployment.environment` (`OTEL_DEPLOYMENT_ENV` wins) |
 
 ## Telemetry
 
@@ -161,4 +162,4 @@ routes.yml                # app routes (edge path + upstream)
 
 ## Contract e2e
 
-Contract e2e tests live in the Plat5 monorepo (`plat5/e2e`, `test:templates`) and hit profiles / projects / tasks **through the gateway**.
+Contract e2e tests live in `plat5dev/toolbox` (`e2e/`, `bun run test:templates`) and hit profiles / projects / tasks **through the gateway**.
