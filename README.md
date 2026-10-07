@@ -138,6 +138,7 @@ src/
   profiles|projects|tasks/  # routes + store
 routes.identity.yml       # identity public surface (edit or omit)
 routes.yml                # app routes (edge path + upstream)
+roles.yml                 # roles → labels (member gets projects:write)
 ```
 
 ## Plat5 contracts (do / don't)
