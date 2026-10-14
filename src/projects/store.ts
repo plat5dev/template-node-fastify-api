@@ -1,18 +1,24 @@
 import type { Db } from "../db.js"
 import { trackDb } from "../db.js"
+import { trim, type Page } from "../pagination.js"
 import type { Project } from "../schemas/common.js"
 
 export class ProjectsStore {
   constructor(private readonly db: Db) {}
 
-  listByOrg(organizationId: string): Project[] {
+  /** One page of the org's projects in id order, and whether there are more. */
+  listByOrg(
+    organizationId: string,
+    page: Page
+  ): { items: Project[]; hasMore: boolean } {
     return trackDb("projects.list", () => {
-      return this.db
+      const rows = this.db
         .prepare(
           `SELECT id, organization_id, name, description, created_at, updated_at
-           FROM projects WHERE organization_id = ? ORDER BY created_at DESC`
+           FROM projects WHERE organization_id = ? AND id > ? ORDER BY id LIMIT ?`
         )
-        .all(organizationId) as Project[]
+        .all(organizationId, page.startingAfter, page.limit + 1) as Project[]
+      return trim(rows, page)
     })
   }
 

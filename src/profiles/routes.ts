@@ -1,4 +1,5 @@
 import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
+import * as audit from "../audit.js"
 import {
   profileParamsSchema,
   profileSchema,
@@ -48,7 +49,7 @@ export const registerProfileRoutes = (app: App, store: ProfilesStore): void => {
           response: { 200: profileSchema }
         }
       },
-      async (req) => {
+      async (req, reply) => {
         const { display_name, bio } = req.body
         const { user_id } = req.params
         const ts = now()
@@ -61,6 +62,10 @@ export const registerProfileRoutes = (app: App, store: ProfilesStore): void => {
             updated_at: ts
           }
           store.update(updated)
+          const changes: audit.Details = {}
+          audit.changed(changes, "display_name", existing.display_name, updated.display_name)
+          audit.changed(changes, "bio", existing.bio, updated.bio)
+          audit.setDetails(reply, changes)
           return updated
         }
         const created: Profile = {
@@ -71,6 +76,13 @@ export const registerProfileRoutes = (app: App, store: ProfilesStore): void => {
           updated_at: ts
         }
         store.insert(created)
+        // A new profile: each field changed from nothing. The profile's id is the user's,
+        // which the path already carries, so there is no created id.
+        const changes: audit.Details = {
+          display_name: { from: null, to: created.display_name }
+        }
+        if (created.bio) changes.bio = { from: null, to: created.bio }
+        audit.setDetails(reply, changes)
         return created
       }
     )

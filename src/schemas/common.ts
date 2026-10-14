@@ -79,11 +79,13 @@ export const taskParamsSchema = Type.Object({
 })
 
 export const projectListSchema = Type.Object({
-  projects: Type.Array(projectSchema)
+  projects: Type.Array(projectSchema),
+  has_more: Type.Boolean()
 })
 
 export const taskListSchema = Type.Object({
-  tasks: Type.Array(taskSchema)
+  tasks: Type.Array(taskSchema),
+  has_more: Type.Boolean()
 })
 
 export type Profile = Static<typeof profileSchema>

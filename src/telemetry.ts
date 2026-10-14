@@ -110,7 +110,7 @@ export const initTelemetry = (config: AppConfig): TelemetryHandle => {
   })
 
   sdk.start()
-  // After MeterProvider is installed (gateway/route-registry pattern).
+  // After MeterProvider is installed (gateway/control-plane pattern).
   initOtelInstruments()
 
   return {

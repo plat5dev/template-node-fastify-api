@@ -56,6 +56,15 @@ export const validationError = (
     kind: "validation"
   })
 
+/** The 422 sentence when nothing more specific applies. */
+export const FALLBACK_VALIDATION = "That doesn't look right."
+
+/** A 422 for one field. No message is the fallback sentence. */
+export const fieldError = (
+  path: string,
+  message = FALLBACK_VALIDATION
+): ApiError => validationError(message, { fields: [{ path, message }] })
+
 export const notFound = (resource: string, id: string): ApiError =>
   new ApiError({
     type: "invalid_request_error",

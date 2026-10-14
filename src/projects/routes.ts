@@ -1,6 +1,8 @@
 import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
 import { ulid } from "ulid"
+import * as audit from "../audit.js"
 import { notFound } from "../errors.js"
+import { listQuerySchema, parsePage } from "../pagination.js"
 import {
   orgParamsSchema,
   projectCreateSchema,
@@ -25,6 +27,7 @@ export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
         schema: {
           tags: ["Projects"],
           params: orgParamsSchema,
+          querystring: listQuerySchema,
           response: {
             200: projectListSchema
           }
@@ -32,8 +35,9 @@ export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
       },
       async (req) => {
         const { organization_id } = req.params
-        const projects = store.listByOrg(organization_id)
-        return { projects }
+        const page = parsePage(req.query)
+        const { items, hasMore } = store.listByOrg(organization_id, page)
+        return { projects: items, has_more: hasMore }
       }
     )
 
@@ -60,6 +64,8 @@ export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
           updated_at: ts
         }
         store.insert(project)
+        audit.setDetails(reply, { project_id: project.id, name: project.name })
+        audit.setCreated(reply, project.id)
         return reply.status(201).send(project)
       }
     )
@@ -91,7 +97,7 @@ export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
           response: { 200: projectSchema }
         }
       },
-      async (req) => {
+      async (req, reply) => {
         const { organization_id, project_id } = req.params
         const { name, description } = req.body
         const existing = store.findInOrg(organization_id, project_id)
@@ -103,6 +109,10 @@ export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
           updated_at: now()
         }
         store.update(updated)
+        const changes: audit.Details = {}
+        audit.changed(changes, "name", existing.name, updated.name)
+        audit.changed(changes, "description", existing.description, updated.description)
+        audit.setDetails(reply, changes)
         return updated
       }
     )
@@ -120,6 +130,7 @@ export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
         const existing = store.findInOrg(organization_id, project_id)
         if (!existing) throw notFound("project", project_id)
         store.delete(organization_id, project_id)
+        // No audit details: the route and the project id in its path say what happened.
         return reply.status(204).send()
       }
     )

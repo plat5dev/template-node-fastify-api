@@ -1,6 +1,8 @@
 import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
 import { ulid } from "ulid"
+import * as audit from "../audit.js"
 import { notFound } from "../errors.js"
+import { listQuerySchema, parsePage } from "../pagination.js"
 import type { ProjectsStore } from "../projects/store.js"
 import {
   projectParamsSchema,
@@ -36,6 +38,7 @@ export const registerTaskRoutes = (
         schema: {
           tags: ["Tasks"],
           params: projectParamsSchema,
+          querystring: listQuerySchema,
           response: {
             200: taskListSchema
           }
@@ -44,7 +47,13 @@ export const registerTaskRoutes = (
       async (req) => {
         const { organization_id, project_id } = req.params
         requireProject(organization_id, project_id)
-        return { tasks: store.listByProject(organization_id, project_id) }
+        const page = parsePage(req.query)
+        const { items, hasMore } = store.listByProject(
+          organization_id,
+          project_id,
+          page
+        )
+        return { tasks: items, has_more: hasMore }
       }
     )
 
@@ -73,6 +82,12 @@ export const registerTaskRoutes = (
           updated_at: ts
         }
         store.insert(task)
+        audit.setDetails(reply, {
+          task_id: task.id,
+          title: task.title,
+          status: task.status
+        })
+        audit.setCreated(reply, task.id)
         return reply.status(201).send(task)
       }
     )
@@ -105,7 +120,7 @@ export const registerTaskRoutes = (
           response: { 200: taskSchema }
         }
       },
-      async (req) => {
+      async (req, reply) => {
         const { organization_id, project_id, task_id } = req.params
         requireProject(organization_id, project_id)
         const { title, status } = req.body
@@ -122,6 +137,10 @@ export const registerTaskRoutes = (
           updated_at: now()
         }
         store.update(updated)
+        const changes: audit.Details = {}
+        audit.changed(changes, "title", existing.title, updated.title)
+        audit.changed(changes, "status", existing.status, updated.status)
+        audit.setDetails(reply, changes)
         return updated
       }
     )
@@ -144,6 +163,7 @@ export const registerTaskRoutes = (
         )
         if (!existing) throw notFound("task", task_id)
         store.delete(organization_id, project_id, task_id)
+        // No audit details: the route and the task id in its path say what happened.
         return reply.status(204).send()
       }
     )
