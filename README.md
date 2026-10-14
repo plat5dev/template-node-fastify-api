@@ -55,22 +55,29 @@ The gateway records each write before it reaches this service. Each write says w
 
 A change is `{"from": …, "to": …}`, only for fields that changed; a write that changed nothing sends no header. Never put a secret in either header.
 
-## Quick start (host app + Plat5 CLI)
+## Quick start
 
 ```bash
-mkdir my-app && cd my-app
-plat5 init --template node-fastify-api --auth -y
-
-pnpm install
-plat5 start          # gateway :5001, control plane :5002, applies roles.yml, routes.identity.yml, routes.audit.yml, routes.yml
-pnpm run dev         # API :3000, health :3001
+plat5 init my-app --template node-fastify-api
+cd my-app
+plat5 start
 ```
 
-`plat5.template.yml` drives init (upstreams, routes, next steps). The CLI fetches this repo, copies the tree, and writes `plat5.yml`.
+You need Docker, nothing else. `plat5 start` runs Plat5, its modules, this API on `:3000`, and the starter web app on `:3001`, then prints every link, login, and a key to call the API with. Sign in to the web app as `dev@example.com` / `password`.
+
+`plat5.template.yml` drives init: upstreams, routes, and `app:` (this compose file, and the web app's origin). The CLI fetches this repo, copies the tree, and writes `plat5.yml`.
+
+To run the API on your own machine instead (your debugger, your editor's runner):
+
+```bash
+plat5 start -x app
+pnpm install
+pnpm run dev           # API :3000, health :3001
+```
 
 Community / fork:
 ```bash
-plat5 init --template plat5dev/template-node-fastify-api --auth -y
+plat5 init my-app --template plat5dev/template-node-fastify-api
 ```
 
 ## Commands
@@ -135,7 +142,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 pnpm run dev
 # OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318
 ```
 
-`plat5.yml` `otel.endpoint` only injects into Plat5/Auth compose — set env on this app yourself.
+Under `plat5 start`, the compose file gets `OTEL_EXPORTER_OTLP_ENDPOINT` from the CLI when the observability module is on. Running on your own machine, set it yourself.
 
 Health on `INTERNAL_PORT` does not emit request spans.
 
