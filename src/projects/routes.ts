@@ -2,7 +2,7 @@ import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
 import { ulid } from "ulid"
 import { notFound } from "../errors.js"
 import {
-  memberParamsSchema,
+  orgParamsSchema,
   projectCreateSchema,
   projectListSchema,
   projectParamsSchema,
@@ -17,14 +17,14 @@ const now = () => new Date().toISOString()
 
 export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
   const plugin: FastifyPluginAsyncTypebox = async (scope) => {
-    const base = "/organizations/:organization_id/members/:member_id/projects"
+    const base = "/organizations/:organization_id/projects"
 
     scope.get(
       base,
       {
         schema: {
           tags: ["Projects"],
-          params: memberParamsSchema,
+          params: orgParamsSchema,
           response: {
             200: projectListSchema
           }
@@ -42,21 +42,20 @@ export const registerProjectRoutes = (app: App, store: ProjectsStore): void => {
       {
         schema: {
           tags: ["Projects"],
-          params: memberParamsSchema,
+          params: orgParamsSchema,
           body: projectCreateSchema,
           response: { 201: projectSchema }
         }
       },
       async (req, reply) => {
         const { name, description } = req.body
-        const { organization_id, member_id } = req.params
+        const { organization_id } = req.params
         const ts = now()
         const project: Project = {
           id: ulid(),
           organization_id,
           name,
           description: description ?? "",
-          created_by_member_id: member_id,
           created_at: ts,
           updated_at: ts
         }

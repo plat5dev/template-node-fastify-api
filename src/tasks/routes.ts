@@ -23,7 +23,7 @@ export const registerTaskRoutes = (
 ): void => {
   const plugin: FastifyPluginAsyncTypebox = async (scope) => {
     const base =
-      "/organizations/:organization_id/members/:member_id/projects/:project_id/tasks"
+      "/organizations/:organization_id/projects/:project_id/tasks"
 
     const requireProject = (organizationId: string, projectId: string) => {
       const project = projects.findInOrg(organizationId, projectId)
@@ -59,7 +59,7 @@ export const registerTaskRoutes = (
         }
       },
       async (req, reply) => {
-        const { organization_id, member_id, project_id } = req.params
+        const { organization_id, project_id } = req.params
         requireProject(organization_id, project_id)
         const { title, status } = req.body
         const ts = now()
@@ -69,7 +69,6 @@ export const registerTaskRoutes = (
           project_id,
           title,
           status: status ?? "todo",
-          created_by_member_id: member_id,
           created_at: ts,
           updated_at: ts
         }

@@ -21,7 +21,6 @@ export const projectSchema = Type.Object({
   organization_id: Type.String(),
   name: Type.String(),
   description: Type.String(),
-  created_by_member_id: Type.String(),
   created_at: Type.String(),
   updated_at: Type.String()
 })
@@ -48,7 +47,6 @@ export const taskSchema = Type.Object({
   project_id: Type.String(),
   title: Type.String(),
   status: taskStatusSchema,
-  created_by_member_id: Type.String(),
   created_at: Type.String(),
   updated_at: Type.String()
 })
@@ -65,20 +63,17 @@ export const taskUpdateSchema = Type.Object({
 
 export const profileParamsSchema = Type.Object({ user_id: Type.String() })
 
-export const memberParamsSchema = Type.Object({
-  organization_id: Type.String(),
-  member_id: Type.String()
+export const orgParamsSchema = Type.Object({
+  organization_id: Type.String()
 })
 
 export const projectParamsSchema = Type.Object({
   organization_id: Type.String(),
-  member_id: Type.String(),
   project_id: Type.String()
 })
 
 export const taskParamsSchema = Type.Object({
   organization_id: Type.String(),
-  member_id: Type.String(),
   project_id: Type.String(),
   task_id: Type.String()
 })
