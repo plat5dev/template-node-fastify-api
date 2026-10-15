@@ -9,7 +9,7 @@ export class ProfilesStore {
     return trackDb("profiles.find", () => {
       const row = this.db
         .prepare(
-          `SELECT user_id, display_name, bio, created_at, updated_at
+          `SELECT user_id, bio, created_at, updated_at
            FROM profiles WHERE user_id = ?`
         )
         .get(userId) as Profile | undefined
@@ -21,10 +21,10 @@ export class ProfilesStore {
     trackDb("profiles.insert", () => {
       this.db
         .prepare(
-          `INSERT INTO profiles (user_id, display_name, bio, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?)`
+          `INSERT INTO profiles (user_id, bio, created_at, updated_at)
+           VALUES (?, ?, ?, ?)`
         )
-        .run(p.user_id, p.display_name, p.bio, p.created_at, p.updated_at)
+        .run(p.user_id, p.bio, p.created_at, p.updated_at)
     })
   }
 
@@ -32,10 +32,10 @@ export class ProfilesStore {
     trackDb("profiles.update", () => {
       this.db
         .prepare(
-          `UPDATE profiles SET display_name = ?, bio = ?, updated_at = ?
+          `UPDATE profiles SET bio = ?, updated_at = ?
            WHERE user_id = ?`
         )
-        .run(p.display_name, p.bio, p.updated_at, p.user_id)
+        .run(p.bio, p.updated_at, p.user_id)
     })
   }
 }

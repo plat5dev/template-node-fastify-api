@@ -7,7 +7,7 @@ import {
   SpanStatusCode,
   trace
 } from "@opentelemetry/api"
-import { ApiError } from "../errors.js"
+import { ApiError, FALLBACK_VALIDATION } from "../errors.js"
 import { observeRequest } from "../metrics.js"
 import type { App } from "../types.js"
 
@@ -167,20 +167,19 @@ export const registerObservability = (app: App): void => {
       return reply.status(err.status).send(err.envelope(requestId))
     }
 
-    // Fastify request validation (JSON Schema/AJV) failures
+    // Fastify request validation (JSON Schema/AJV) failures. AJV's own text is
+    // schema talk, not product copy (plat5/docs/error-copy.md): name the field,
+    // in a sentence.
     if (err && typeof err === "object" && "validation" in err) {
-      const validation = (
-        err as { validation?: Array<{ instancePath?: string; message?: string }> }
-      ).validation
-      const fields =
-        validation?.map((v) => ({
-          path: (v.instancePath ?? "").replace(/^\//, "") || "body",
-          message: v.message ?? "invalid"
-        })) ?? []
+      const validation = (err as { validation?: AjvIssue[] }).validation ?? []
+      // A union (anyOf of consts) fails once per branch: one field each.
+      const fields = validation
+        .map(ajvField)
+        .filter((f, i, all) => all.findIndex((g) => g.path === f.path) === i)
       const apiErr = new ApiError({
         type: "invalid_request_error",
         code: "VALIDATION_ERROR",
-        message: "Request validation failed",
+        message: fields[0]?.message ?? FALLBACK_VALIDATION,
         details: { fields },
         status: 422,
         kind: "validation"
@@ -203,4 +202,33 @@ export const registerObservability = (app: App): void => {
     })
     return reply.status(500).send(apiErr.envelope(requestId))
   })
+}
+
+type AjvIssue = {
+  instancePath?: string
+  keyword?: string
+  params?: { missingProperty?: string; limit?: number; allowedValues?: unknown[] }
+}
+
+/** One AJV issue as a field and a sentence. */
+const ajvField = (v: AjvIssue): { path: string; message: string } => {
+  const base = (v.instancePath ?? "").replace(/^\//, "").replace(/\//g, ".")
+  const missing = v.keyword === "required" ? v.params?.missingProperty : undefined
+  const path = missing ? (base ? `${base}.${missing}` : missing) : base || "body"
+  const field = path.split(".").pop() ?? path
+  const label = `${field.charAt(0).toUpperCase()}${field.slice(1).replace(/_/g, " ")}`
+  switch (v.keyword) {
+    case "required":
+      return { path, message: `${label} is required.` }
+    case "maxLength":
+      return { path, message: `${label} is too long.` }
+    case "minLength":
+      return { path, message: `${label} is required.` }
+    case "enum":
+    case "const":
+    case "anyOf":
+      return { path, message: `${label} isn't an allowed value.` }
+    default:
+      return { path, message: FALLBACK_VALIDATION }
+  }
 }

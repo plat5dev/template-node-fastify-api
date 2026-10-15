@@ -18,7 +18,6 @@ export const migrate = (db: Db): void => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS profiles (
       user_id TEXT PRIMARY KEY NOT NULL,
-      display_name TEXT NOT NULL,
       bio TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -50,6 +49,13 @@ export const migrate = (db: Db): void => {
     CREATE INDEX IF NOT EXISTS tasks_project_id_idx ON tasks (project_id);
     CREATE INDEX IF NOT EXISTS tasks_organization_id_idx ON tasks (organization_id);
   `)
+  // Profiles had their own display_name; the person's name is identity's now.
+  const columns = db.prepare("SELECT name FROM pragma_table_info('profiles')").all() as {
+    name: string
+  }[]
+  if (columns.some((c) => c.name === "display_name")) {
+    db.exec("ALTER TABLE profiles DROP COLUMN display_name")
+  }
 }
 
 export const trackDb = <T>(operation: string, fn: () => T): T => {

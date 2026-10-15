@@ -5,15 +5,14 @@ const nonEmptyString = (maxLength = 255) =>
 
 export const profileSchema = Type.Object({
   user_id: Type.String(),
-  display_name: Type.String(),
   bio: Type.String(),
   created_at: Type.String(),
   updated_at: Type.String()
 })
 
+// No name here: the person's name is identity's (GET /user), shown in every org.
 export const profileUpdateSchema = Type.Object({
-  display_name: nonEmptyString(),
-  bio: Type.Optional(Type.String({ maxLength: 2000 }))
+  bio: Type.String({ maxLength: 2000 })
 })
 
 export const projectSchema = Type.Object({
