@@ -1,5 +1,5 @@
 /**
- * List parameters, the way every Plat5 list takes them (plat5 docs/lists.md).
+ * List parameters, the way every Plat5 list takes them (plat5 docs/reference/lists.md).
  *
  * `limit` defaults to 50; over 100 is clamped. `starting_after` is the id of the last item
  * on the previous page. Lists run in id order (ids are ULIDs, so oldest first) and answer
@@ -22,13 +22,16 @@ export const listQuerySchema = Type.Object({
   )
 })
 
+/** Plat5 ids, and this API's, are ULIDs in lowercase. */
+const isLowercaseUlid = (id: string): boolean => isValid(id) && id === id.toLowerCase()
+
 /** One request's limit and cursor. An empty `startingAfter` is the first page. */
 export type Page = { limit: number; startingAfter: string }
 
 /**
  * Reads `limit` and `starting_after`. A limit under 1 or not a whole number, or a cursor
- * that isn't a ULID, is a 422. A well-formed cursor that isn't in the list is not an error:
- * the walk continues after it in id order.
+ * that isn't a lowercase ULID, is a 422. A well-formed cursor that isn't in the list is not
+ * an error: the walk continues after it in id order.
  */
 export const parsePage = (query: {
   limit?: string
@@ -41,7 +44,7 @@ export const parsePage = (query: {
     limit = Math.min(Number(rawLimit), MAX_LIMIT)
   }
   const startingAfter = query.starting_after?.trim() ?? ""
-  if (startingAfter && !isValid(startingAfter)) throw fieldError("starting_after")
+  if (startingAfter && !isLowercaseUlid(startingAfter)) throw fieldError("starting_after")
   return { limit, startingAfter }
 }
 

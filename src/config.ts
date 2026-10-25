@@ -55,6 +55,8 @@ export type AppConfig = {
   readonly port: number
   readonly internalPort: number
   readonly databasePath: string
+  /** Identity's internal base URL, for the lifecycle feed. Unset: the feed isn't read. */
+  readonly identityInternalUrl: string | undefined
   readonly serviceName: string
   readonly serviceNamespace: string
   readonly serviceVersion: string
@@ -77,6 +79,7 @@ export const loadConfig = (): AppConfig => {
     port: envInt("PORT", 3000),
     internalPort: envInt("INTERNAL_PORT", 3001),
     databasePath: optionalNonEmpty("DATABASE_PATH") ?? "./data/app.db",
+    identityInternalUrl: optionalNonEmpty("IDENTITY_INTERNAL_URL"),
     serviceName: optionalNonEmpty("OTEL_SERVICE_NAME") ?? "api",
     serviceNamespace: optionalNonEmpty("OTEL_SERVICE_NAMESPACE") ?? "api",
     serviceVersion: optionalNonEmpty("OTEL_SERVICE_VERSION") ?? "0.0.0",

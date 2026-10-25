@@ -1,9 +1,8 @@
 import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
 import { ulid } from "ulid"
 import * as audit from "../audit.js"
-import { notFound } from "../errors.js"
+import { invalidRequest, notFound } from "../errors.js"
 import { listQuerySchema, parsePage } from "../pagination.js"
-import type { ProjectsStore } from "../projects/store.js"
 import {
   projectParamsSchema,
   taskCreateSchema,
@@ -16,21 +15,20 @@ import {
 import type { App } from "../types.js"
 import type { TasksStore } from "./store.js"
 
+/**
+ * The caller's member id in the project's tree, from the front door. A create records it
+ * as the task's author, and answers 400 without it.
+ */
+export const MEMBER_HEADER = "x-plat5-member-id"
+
 const now = () => new Date().toISOString()
 
-export const registerTaskRoutes = (
-  app: App,
-  store: TasksStore,
-  projects: ProjectsStore
-): void => {
+// Every route scopes its lookups by the project id in the path, and checks nothing about
+// the caller or the project: the front door decided who may call, on which project.
+export const registerTaskRoutes = (app: App, store: TasksStore): void => {
   const plugin: FastifyPluginAsyncTypebox = async (scope) => {
-    const base =
-      "/organizations/:organization_id/projects/:project_id/tasks"
-
-    const requireProject = (organizationId: string, projectId: string) => {
-      const project = projects.findInOrg(organizationId, projectId)
-      if (!project) throw notFound("project", projectId)
-    }
+    // A project is a Plat5 node: its id is in the path, from the front door.
+    const base = "/projects/:project_id/tasks"
 
     scope.get(
       base,
@@ -45,14 +43,9 @@ export const registerTaskRoutes = (
         }
       },
       async (req) => {
-        const { organization_id, project_id } = req.params
-        requireProject(organization_id, project_id)
+        const { project_id } = req.params
         const page = parsePage(req.query)
-        const { items, hasMore } = store.listByProject(
-          organization_id,
-          project_id,
-          page
-        )
+        const { items, hasMore } = store.listByProject(project_id, page)
         return { tasks: items, has_more: hasMore }
       }
     )
@@ -68,16 +61,17 @@ export const registerTaskRoutes = (
         }
       },
       async (req, reply) => {
-        const { organization_id, project_id } = req.params
-        requireProject(organization_id, project_id)
+        const { project_id } = req.params
+        const memberId = req.headers[MEMBER_HEADER]
+        if (typeof memberId !== "string" || memberId === "") throw invalidRequest()
         const { title, status } = req.body
         const ts = now()
         const task: Task = {
-          id: ulid(),
-          organization_id,
+          id: ulid().toLowerCase(),
           project_id,
           title,
           status: status ?? "todo",
+          created_by: memberId,
           created_at: ts,
           updated_at: ts
         }
@@ -102,9 +96,8 @@ export const registerTaskRoutes = (
         }
       },
       async (req) => {
-        const { organization_id, project_id, task_id } = req.params
-        requireProject(organization_id, project_id)
-        const task = store.findInProject(organization_id, project_id, task_id)
+        const { project_id, task_id } = req.params
+        const task = store.findInProject(project_id, task_id)
         if (!task) throw notFound("task", task_id)
         return task
       }
@@ -121,14 +114,9 @@ export const registerTaskRoutes = (
         }
       },
       async (req, reply) => {
-        const { organization_id, project_id, task_id } = req.params
-        requireProject(organization_id, project_id)
+        const { project_id, task_id } = req.params
         const { title, status } = req.body
-        const existing = store.findInProject(
-          organization_id,
-          project_id,
-          task_id
-        )
+        const existing = store.findInProject(project_id, task_id)
         if (!existing) throw notFound("task", task_id)
         const updated: Task = {
           ...existing,
@@ -154,15 +142,10 @@ export const registerTaskRoutes = (
         }
       },
       async (req, reply) => {
-        const { organization_id, project_id, task_id } = req.params
-        requireProject(organization_id, project_id)
-        const existing = store.findInProject(
-          organization_id,
-          project_id,
-          task_id
-        )
+        const { project_id, task_id } = req.params
+        const existing = store.findInProject(project_id, task_id)
         if (!existing) throw notFound("task", task_id)
-        store.delete(organization_id, project_id, task_id)
+        store.delete(project_id, task_id)
         // No audit details: the route and the task id in its path say what happened.
         return reply.status(204).send()
       }

@@ -3,39 +3,29 @@ import { trackDb } from "../db.js"
 import { trim, type Page } from "../pagination.js"
 import type { Task } from "../schemas/common.js"
 
+const COLUMNS = "id, project_id, title, status, created_by, created_at, updated_at"
+
 export class TasksStore {
   constructor(private readonly db: Db) {}
 
   /** One page of the project's tasks in id order, and whether there are more. */
-  listByProject(
-    organizationId: string,
-    projectId: string,
-    page: Page
-  ): { items: Task[]; hasMore: boolean } {
+  listByProject(projectId: string, page: Page): { items: Task[]; hasMore: boolean } {
     return trackDb("tasks.list", () => {
       const rows = this.db
         .prepare(
-          `SELECT id, organization_id, project_id, title, status, created_at, updated_at
-           FROM tasks WHERE organization_id = ? AND project_id = ? AND id > ?
-           ORDER BY id LIMIT ?`
+          `SELECT ${COLUMNS}
+           FROM tasks WHERE project_id = ? AND id > ? ORDER BY id LIMIT ?`
         )
-        .all(organizationId, projectId, page.startingAfter, page.limit + 1) as Task[]
+        .all(projectId, page.startingAfter, page.limit + 1) as Task[]
       return trim(rows, page)
     })
   }
 
-  findInProject(
-    organizationId: string,
-    projectId: string,
-    taskId: string
-  ): Task | null {
+  findInProject(projectId: string, taskId: string): Task | null {
     return trackDb("tasks.find", () => {
       const row = this.db
-        .prepare(
-          `SELECT id, organization_id, project_id, title, status, created_at, updated_at
-           FROM tasks WHERE id = ? AND organization_id = ? AND project_id = ?`
-        )
-        .get(taskId, organizationId, projectId) as Task | undefined
+        .prepare(`SELECT ${COLUMNS} FROM tasks WHERE id = ? AND project_id = ?`)
+        .get(taskId, projectId) as Task | undefined
       return row ?? null
     })
   }
@@ -43,16 +33,13 @@ export class TasksStore {
   insert(t: Task): void {
     trackDb("tasks.insert", () => {
       this.db
-        .prepare(
-          `INSERT INTO tasks (id, organization_id, project_id, title, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        )
+        .prepare(`INSERT INTO tasks (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`)
         .run(
           t.id,
-          t.organization_id,
           t.project_id,
           t.title,
           t.status,
+          t.created_by,
           t.created_at,
           t.updated_at
         )
@@ -64,27 +51,27 @@ export class TasksStore {
       this.db
         .prepare(
           `UPDATE tasks SET title = ?, status = ?, updated_at = ?
-           WHERE id = ? AND organization_id = ? AND project_id = ?`
+           WHERE id = ? AND project_id = ?`
         )
-        .run(
-          t.title,
-          t.status,
-          t.updated_at,
-          t.id,
-          t.organization_id,
-          t.project_id
-        )
+        .run(t.title, t.status, t.updated_at, t.id, t.project_id)
     })
   }
 
-  delete(organizationId: string, projectId: string, taskId: string): boolean {
-    return trackDb("tasks.delete", () => {
-      const res = this.db
-        .prepare(
-          `DELETE FROM tasks WHERE id = ? AND organization_id = ? AND project_id = ?`
-        )
-        .run(taskId, organizationId, projectId)
-      return res.changes > 0
+  delete(projectId: string, taskId: string): void {
+    trackDb("tasks.delete", () => {
+      this.db
+        .prepare(`DELETE FROM tasks WHERE id = ? AND project_id = ?`)
+        .run(taskId, projectId)
+    })
+  }
+
+  /**
+   * Deletes every task of a project, for its purge. Deleting none is fine, so it can run
+   * again for the same project.
+   */
+  deleteByProject(projectId: string): void {
+    trackDb("tasks.delete_by_project", () => {
+      this.db.prepare(`DELETE FROM tasks WHERE project_id = ?`).run(projectId)
     })
   }
 }

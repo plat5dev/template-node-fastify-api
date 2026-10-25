@@ -6,12 +6,11 @@ import swaggerUi from "@fastify/swagger-ui"
 import { createServer } from "node:http"
 import { loadConfig } from "./config.js"
 import { connect, migrate, type Db } from "./db.js"
+import { LifecycleConsumer } from "./lifecycle.js"
 import { collectMetrics, initMetrics, metricsContentType } from "./metrics.js"
 import { registerObservability } from "./middleware/observability.js"
 import { ProfilesStore } from "./profiles/store.js"
 import { registerProfileRoutes } from "./profiles/routes.js"
-import { ProjectsStore } from "./projects/store.js"
-import { registerProjectRoutes } from "./projects/routes.js"
 import { TasksStore } from "./tasks/store.js"
 import { registerTaskRoutes } from "./tasks/routes.js"
 import { initTelemetry } from "./telemetry.js"
@@ -24,12 +23,11 @@ const db: Db = connect(config.databasePath)
 migrate(db)
 
 const profiles = new ProfilesStore(db)
-const projects = new ProjectsStore(db)
 const tasks = new TasksStore(db)
 
 const app = Fastify({
   logger: false,
-  // No CORS — gateway owns it (plat5 gateway-contract)
+  // No CORS: the gateway owns it (plat5 docs/guides/write-a-service.md)
   trustProxy: true
 }).withTypeProvider<TypeBoxTypeProvider>()
 
@@ -47,8 +45,7 @@ await app.register(swagger, {
 await app.register(swaggerUi, { routePrefix: "/docs" })
 
 registerProfileRoutes(app, profiles)
-registerProjectRoutes(app, projects)
-registerTaskRoutes(app, tasks, projects)
+registerTaskRoutes(app, tasks)
 
 const internal = createServer(async (req, res) => {
   const url = req.url?.split("?")[0] ?? "/"
@@ -71,6 +68,10 @@ const internal = createServer(async (req, res) => {
   res.writeHead(404).end()
 })
 
+const lifecycle = config.identityInternalUrl
+  ? new LifecycleConsumer(config.identityInternalUrl, db, tasks)
+  : undefined
+
 const shutdown = async (signal: string) => {
   console.log(
     JSON.stringify({
@@ -80,6 +81,7 @@ const shutdown = async (signal: string) => {
       signal
     })
   )
+  lifecycle?.stop()
   await app.close()
   await new Promise<void>((resolve) => internal.close(() => resolve()))
   db.close()
@@ -105,3 +107,16 @@ console.log(
     internal_port: config.internalPort
   })
 )
+
+if (lifecycle) {
+  lifecycle.start()
+} else {
+  console.log(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: "warn",
+      message:
+        "IDENTITY_INTERNAL_URL is unset: not reading the lifecycle feed, so a purged project's tasks are kept"
+    })
+  )
+}

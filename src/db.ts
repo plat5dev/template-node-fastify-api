@@ -23,39 +23,25 @@ export const migrate = (db: Db): void => {
       updated_at TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS projects (
+    -- A project is a Plat5 node: its tasks are keyed by its id, and go when it's purged.
+    CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY NOT NULL,
-      organization_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
+      project_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'todo',
+      created_by TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
 
-    CREATE INDEX IF NOT EXISTS projects_organization_id_idx
-      ON projects (organization_id);
-
-    CREATE TABLE IF NOT EXISTS tasks (
-      id TEXT PRIMARY KEY NOT NULL,
-      organization_id TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      title TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'todo',
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-    );
-
     CREATE INDEX IF NOT EXISTS tasks_project_id_idx ON tasks (project_id);
-    CREATE INDEX IF NOT EXISTS tasks_organization_id_idx ON tasks (organization_id);
+
+    -- The last lifecycle event acted on: one row, an opaque decimal string.
+    CREATE TABLE IF NOT EXISTS lifecycle_cursor (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      event_id TEXT NOT NULL
+    );
   `)
-  // Profiles had their own display_name; the person's name is identity's now.
-  const columns = db.prepare("SELECT name FROM pragma_table_info('profiles')").all() as {
-    name: string
-  }[]
-  if (columns.some((c) => c.name === "display_name")) {
-    db.exec("ALTER TABLE profiles DROP COLUMN display_name")
-  }
 }
 
 export const trackDb = <T>(operation: string, fn: () => T): T => {

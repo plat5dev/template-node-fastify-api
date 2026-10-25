@@ -7,7 +7,13 @@ import {
   SpanStatusCode,
   trace
 } from "@opentelemetry/api"
-import { ApiError, FALLBACK_VALIDATION } from "../errors.js"
+import {
+  ApiError,
+  FALLBACK_VALIDATION,
+  fieldError,
+  notFound,
+  payloadTooLarge
+} from "../errors.js"
 import { observeRequest } from "../metrics.js"
 import type { App } from "../types.js"
 
@@ -31,10 +37,26 @@ const pathParam = (req: FastifyRequest, name: string): string | undefined => {
   return typeof value === "string" && value !== "" ? value : undefined
 }
 
+/**
+ * The ids the front door gave this request (plat5 docs/reference/telemetry.md): the user on
+ * a user route, the project node and the caller's member on a project route. Log fields use
+ * them as named; span attributes add the `plat5.` prefix.
+ */
+const callerIds = (req: FastifyRequest): [field: string, value: string][] => {
+  const ids: [string, string][] = []
+  const userId = pathParam(req, "user_id")
+  if (userId) ids.push(["user_id", userId])
+  const projectId = pathParam(req, "project_id")
+  if (projectId) ids.push(["node_id", projectId])
+  const memberId = readHeader(req, "x-plat5-member-id")
+  if (memberId) ids.push(["member_id", memberId])
+  return ids
+}
+
 const ULID_OR_UUID =
   /^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 
-/** Low-cardinality route label for metrics (plat5/docs/telemetry.md). */
+/** Low-cardinality route label for metrics (plat5 docs/reference/telemetry.md). */
 export const normalizeRoute = (path: string): string => {
   const bare = path.split("?")[0] || "/"
   const parts = bare.split("/").map((seg) => {
@@ -117,9 +139,7 @@ export const registerObservability = (app: App): void => {
 
     observeRequest(req.method, route, status, durationSeconds)
 
-    const userId = pathParam(req, "user_id")
-    const organizationId = pathParam(req, "organization_id")
-    const memberId = pathParam(req, "member_id")
+    const ids = callerIds(req)
 
     if (s?.span) {
       const template = req.routeOptions.url
@@ -127,9 +147,7 @@ export const registerObservability = (app: App): void => {
         s.span.updateName(`${req.method} ${template}`)
         s.span.setAttribute("http.route", template)
       }
-      if (userId) s.span.setAttribute("user.id", userId)
-      if (organizationId) s.span.setAttribute("organization.id", organizationId)
-      if (memberId) s.span.setAttribute("member.id", memberId)
+      for (const [field, value] of ids) s.span.setAttribute(`plat5.${field}`, value)
       applyHttpStatus(s.span, status, s.errorKind)
       s.span.end()
     }
@@ -144,9 +162,7 @@ export const registerObservability = (app: App): void => {
       duration_ms: durationMs,
       request_id: requestIdOf(req)
     }
-    if (userId) line.user_id = userId
-    if (organizationId) line.organization_id = organizationId
-    if (memberId) line.member_id = memberId
+    for (const [field, value] of ids) line[field] = value
     if (status >= 500) {
       line.error_kind = "internal"
       line.error_message = "request failed"
@@ -154,6 +170,10 @@ export const registerObservability = (app: App): void => {
     stampTrace(line, s?.span)
     console.log(JSON.stringify(line))
   })
+
+  app.setNotFoundHandler((req, reply) =>
+    reply.status(404).send(notFound("resource", null).envelope(requestIdOf(req)))
+  )
 
   app.setErrorHandler((err, req, reply) => {
     const requestId = requestIdOf(req)
@@ -168,8 +188,8 @@ export const registerObservability = (app: App): void => {
     }
 
     // Fastify request validation (JSON Schema/AJV) failures. AJV's own text is
-    // schema talk, not product copy (plat5/docs/error-copy.md): name the field,
-    // in a sentence.
+    // schema talk, not product copy (plat5 docs/reference/error-copy.md): name the
+    // field, in a sentence.
     if (err && typeof err === "object" && "validation" in err) {
       const validation = (err as { validation?: AjvIssue[] }).validation ?? []
       // A union (anyOf of consts) fails once per branch: one field each.
@@ -187,6 +207,17 @@ export const registerObservability = (app: App): void => {
       return reply.status(422).send(apiErr.envelope(requestId))
     }
 
+    // Fastify's own client errors: a body that isn't JSON, or one over bodyLimit. Their
+    // text isn't product copy either: the envelope, with a fallback sentence.
+    const statusCode = (err as { statusCode?: number }).statusCode
+    if (statusCode === 400) {
+      return reply.status(422).send(fieldError("body").envelope(requestId))
+    }
+    if (statusCode === 413) {
+      const apiErr = payloadTooLarge(req.server.initialConfig.bodyLimit ?? 0)
+      return reply.status(413).send(apiErr.envelope(requestId))
+    }
+
     if (s) {
       s.errorKind = "internal"
       applyHttpStatus(s.span, 500, "internal")
@@ -195,7 +226,7 @@ export const registerObservability = (app: App): void => {
     const apiErr = new ApiError({
       type: "api_error",
       code: "INTERNAL_ERROR",
-      message: "An unexpected error occurred",
+      message: "An unexpected error occurred.",
       details: null,
       status: 500,
       kind: "internal"
