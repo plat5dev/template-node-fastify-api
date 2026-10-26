@@ -25,7 +25,7 @@ export const taskStatusSchema = Type.Union([
 // the tree (plat5 docs/concepts/model.md#where-a-field-goes).
 export const taskSchema = Type.Object({
   id: Type.String(),
-  project_id: Type.String(),
+  environment_id: Type.String(),
   title: Type.String(),
   status: taskStatusSchema,
   created_by: Type.String(),
@@ -45,10 +45,10 @@ export const taskUpdateSchema = Type.Object({
 
 export const profileParamsSchema = Type.Object({ user_id: Type.String() })
 
-export const projectParamsSchema = Type.Object({ project_id: Type.String() })
+export const environmentParamsSchema = Type.Object({ environment_id: Type.String() })
 
 export const taskParamsSchema = Type.Object({
-  project_id: Type.String(),
+  environment_id: Type.String(),
   task_id: Type.String()
 })
 

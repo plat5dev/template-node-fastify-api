@@ -4,7 +4,7 @@ import * as audit from "../audit.js"
 import { invalidRequest, notFound } from "../errors.js"
 import { listQuerySchema, parsePage } from "../pagination.js"
 import {
-  projectParamsSchema,
+  environmentParamsSchema,
   taskCreateSchema,
   taskListSchema,
   taskParamsSchema,
@@ -16,26 +16,27 @@ import type { App } from "../types.js"
 import type { TasksStore } from "./store.js"
 
 /**
- * The caller's member id in the project's tree, from the front door. A create records it
- * as the task's author, and answers 400 without it.
+ * The caller's member id in the environment's tree, from the front door. A create records
+ * it as the task's author, and answers 400 without it.
  */
 export const MEMBER_HEADER = "x-plat5-member-id"
 
 const now = () => new Date().toISOString()
 
-// Every route scopes its lookups by the project id in the path, and checks nothing about
-// the caller or the project: the front door decided who may call, on which project.
+// Every route scopes its lookups by the environment id in the path, and checks nothing
+// about the caller or the environment: the front door decided who may call, on which
+// environment.
 export const registerTaskRoutes = (app: App, store: TasksStore): void => {
   const plugin: FastifyPluginAsyncTypebox = async (scope) => {
-    // A project is a Plat5 node: its id is in the path, from the front door.
-    const base = "/projects/:project_id/tasks"
+    // An environment is a Plat5 node: its id is in the path, from the front door.
+    const base = "/environments/:environment_id/tasks"
 
     scope.get(
       base,
       {
         schema: {
           tags: ["Tasks"],
-          params: projectParamsSchema,
+          params: environmentParamsSchema,
           querystring: listQuerySchema,
           response: {
             200: taskListSchema
@@ -43,9 +44,9 @@ export const registerTaskRoutes = (app: App, store: TasksStore): void => {
         }
       },
       async (req) => {
-        const { project_id } = req.params
+        const { environment_id } = req.params
         const page = parsePage(req.query)
-        const { items, hasMore } = store.listByProject(project_id, page)
+        const { items, hasMore } = store.listByEnvironment(environment_id, page)
         return { tasks: items, has_more: hasMore }
       }
     )
@@ -55,20 +56,20 @@ export const registerTaskRoutes = (app: App, store: TasksStore): void => {
       {
         schema: {
           tags: ["Tasks"],
-          params: projectParamsSchema,
+          params: environmentParamsSchema,
           body: taskCreateSchema,
           response: { 201: taskSchema }
         }
       },
       async (req, reply) => {
-        const { project_id } = req.params
+        const { environment_id } = req.params
         const memberId = req.headers[MEMBER_HEADER]
         if (typeof memberId !== "string" || memberId === "") throw invalidRequest()
         const { title, status } = req.body
         const ts = now()
         const task: Task = {
           id: ulid().toLowerCase(),
-          project_id,
+          environment_id,
           title,
           status: status ?? "todo",
           created_by: memberId,
@@ -96,8 +97,8 @@ export const registerTaskRoutes = (app: App, store: TasksStore): void => {
         }
       },
       async (req) => {
-        const { project_id, task_id } = req.params
-        const task = store.findInProject(project_id, task_id)
+        const { environment_id, task_id } = req.params
+        const task = store.findInEnvironment(environment_id, task_id)
         if (!task) throw notFound("task", task_id)
         return task
       }
@@ -114,9 +115,9 @@ export const registerTaskRoutes = (app: App, store: TasksStore): void => {
         }
       },
       async (req, reply) => {
-        const { project_id, task_id } = req.params
+        const { environment_id, task_id } = req.params
         const { title, status } = req.body
-        const existing = store.findInProject(project_id, task_id)
+        const existing = store.findInEnvironment(environment_id, task_id)
         if (!existing) throw notFound("task", task_id)
         const updated: Task = {
           ...existing,
@@ -142,10 +143,10 @@ export const registerTaskRoutes = (app: App, store: TasksStore): void => {
         }
       },
       async (req, reply) => {
-        const { project_id, task_id } = req.params
-        const existing = store.findInProject(project_id, task_id)
+        const { environment_id, task_id } = req.params
+        const existing = store.findInEnvironment(environment_id, task_id)
         if (!existing) throw notFound("task", task_id)
-        store.delete(project_id, task_id)
+        store.delete(environment_id, task_id)
         // No audit details: the route and the task id in its path say what happened.
         return reply.status(204).send()
       }

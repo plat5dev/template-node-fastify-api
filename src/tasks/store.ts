@@ -3,29 +3,29 @@ import { trackDb } from "../db.js"
 import { trim, type Page } from "../pagination.js"
 import type { Task } from "../schemas/common.js"
 
-const COLUMNS = "id, project_id, title, status, created_by, created_at, updated_at"
+const COLUMNS = "id, environment_id, title, status, created_by, created_at, updated_at"
 
 export class TasksStore {
   constructor(private readonly db: Db) {}
 
-  /** One page of the project's tasks in id order, and whether there are more. */
-  listByProject(projectId: string, page: Page): { items: Task[]; hasMore: boolean } {
+  /** One page of the environment's tasks in id order, and whether there are more. */
+  listByEnvironment(environmentId: string, page: Page): { items: Task[]; hasMore: boolean } {
     return trackDb("tasks.list", () => {
       const rows = this.db
         .prepare(
           `SELECT ${COLUMNS}
-           FROM tasks WHERE project_id = ? AND id > ? ORDER BY id LIMIT ?`
+           FROM tasks WHERE environment_id = ? AND id > ? ORDER BY id LIMIT ?`
         )
-        .all(projectId, page.startingAfter, page.limit + 1) as Task[]
+        .all(environmentId, page.startingAfter, page.limit + 1) as Task[]
       return trim(rows, page)
     })
   }
 
-  findInProject(projectId: string, taskId: string): Task | null {
+  findInEnvironment(environmentId: string, taskId: string): Task | null {
     return trackDb("tasks.find", () => {
       const row = this.db
-        .prepare(`SELECT ${COLUMNS} FROM tasks WHERE id = ? AND project_id = ?`)
-        .get(taskId, projectId) as Task | undefined
+        .prepare(`SELECT ${COLUMNS} FROM tasks WHERE id = ? AND environment_id = ?`)
+        .get(taskId, environmentId) as Task | undefined
       return row ?? null
     })
   }
@@ -36,7 +36,7 @@ export class TasksStore {
         .prepare(`INSERT INTO tasks (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`)
         .run(
           t.id,
-          t.project_id,
+          t.environment_id,
           t.title,
           t.status,
           t.created_by,
@@ -51,27 +51,27 @@ export class TasksStore {
       this.db
         .prepare(
           `UPDATE tasks SET title = ?, status = ?, updated_at = ?
-           WHERE id = ? AND project_id = ?`
+           WHERE id = ? AND environment_id = ?`
         )
-        .run(t.title, t.status, t.updated_at, t.id, t.project_id)
+        .run(t.title, t.status, t.updated_at, t.id, t.environment_id)
     })
   }
 
-  delete(projectId: string, taskId: string): void {
+  delete(environmentId: string, taskId: string): void {
     trackDb("tasks.delete", () => {
       this.db
-        .prepare(`DELETE FROM tasks WHERE id = ? AND project_id = ?`)
-        .run(taskId, projectId)
+        .prepare(`DELETE FROM tasks WHERE id = ? AND environment_id = ?`)
+        .run(taskId, environmentId)
     })
   }
 
   /**
-   * Deletes every task of a project, for its purge. Deleting none is fine, so it can run
-   * again for the same project.
+   * Deletes every task of an environment, for its purge. Deleting none is fine, so it can
+   * run again for the same environment.
    */
-  deleteByProject(projectId: string): void {
-    trackDb("tasks.delete_by_project", () => {
-      this.db.prepare(`DELETE FROM tasks WHERE project_id = ?`).run(projectId)
+  deleteByEnvironment(environmentId: string): void {
+    trackDb("tasks.delete_by_environment", () => {
+      this.db.prepare(`DELETE FROM tasks WHERE environment_id = ?`).run(environmentId)
     })
   }
 }

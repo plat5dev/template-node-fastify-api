@@ -116,7 +116,7 @@ if (lifecycle) {
       timestamp: new Date().toISOString(),
       level: "warn",
       message:
-        "IDENTITY_INTERNAL_URL is unset: not reading the lifecycle feed, so a purged project's tasks are kept"
+        "IDENTITY_INTERNAL_URL is unset: not reading the lifecycle feed, so a purged environment's tasks are kept"
     })
   )
 }

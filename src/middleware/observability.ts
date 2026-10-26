@@ -39,15 +39,15 @@ const pathParam = (req: FastifyRequest, name: string): string | undefined => {
 
 /**
  * The ids the front door gave this request (plat5 docs/reference/telemetry.md): the user on
- * a user route, the project node and the caller's member on a project route. Log fields use
- * them as named; span attributes add the `plat5.` prefix.
+ * a user route, the environment node and the caller's member on an environment route. Log
+ * fields use them as named; span attributes add the `plat5.` prefix.
  */
 const callerIds = (req: FastifyRequest): [field: string, value: string][] => {
   const ids: [string, string][] = []
   const userId = pathParam(req, "user_id")
   if (userId) ids.push(["user_id", userId])
-  const projectId = pathParam(req, "project_id")
-  if (projectId) ids.push(["node_id", projectId])
+  const environmentId = pathParam(req, "environment_id")
+  if (environmentId) ids.push(["node_id", environmentId])
   const memberId = readHeader(req, "x-plat5-member-id")
   if (memberId) ids.push(["member_id", memberId])
   return ids

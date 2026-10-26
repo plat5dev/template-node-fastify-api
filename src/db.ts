@@ -23,10 +23,10 @@ export const migrate = (db: Db): void => {
       updated_at TEXT NOT NULL
     );
 
-    -- A project is a Plat5 node: its tasks are keyed by its id, and go when it's purged.
+    -- An environment is a Plat5 node: its tasks are keyed by its id, and go when it's purged.
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY NOT NULL,
-      project_id TEXT NOT NULL,
+      environment_id TEXT NOT NULL,
       title TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'todo',
       created_by TEXT NOT NULL,
@@ -34,7 +34,7 @@ export const migrate = (db: Db): void => {
       updated_at TEXT NOT NULL
     );
 
-    CREATE INDEX IF NOT EXISTS tasks_project_id_idx ON tasks (project_id);
+    CREATE INDEX IF NOT EXISTS tasks_environment_id_idx ON tasks (environment_id);
 
     -- The last lifecycle event acted on: one row, an opaque decimal string.
     CREATE TABLE IF NOT EXISTS lifecycle_cursor (
