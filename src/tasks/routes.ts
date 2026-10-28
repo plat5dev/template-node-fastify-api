@@ -1,5 +1,5 @@
 import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
-import { ulid } from "ulid"
+import { monotonicFactory } from "ulid"
 import * as audit from "../audit.js"
 import { invalidRequest, notFound } from "../errors.js"
 import { listQuerySchema, parsePage } from "../pagination.js"
@@ -22,6 +22,9 @@ import type { TasksStore } from "./store.js"
 export const MEMBER_HEADER = "x-plat5-member-id"
 
 const now = () => new Date().toISOString()
+
+// Monotonic, so tasks made in the same millisecond still list in the order they were made.
+const ulid = monotonicFactory()
 
 // Every route scopes its lookups by the environment id in the path, and checks nothing
 // about the caller or the environment: the front door decided who may call, on which
