@@ -1,6 +1,7 @@
 import type { FastifyRequest } from "fastify"
 import {
   context,
+  type Context,
   propagation,
   type Span,
   SpanKind,
@@ -26,7 +27,8 @@ const readHeader = (req: FastifyRequest, name: string): string | undefined => {
   return undefined
 }
 
-const requestIdOf = (req: FastifyRequest): string | null =>
+/** The request's `X-Request-ID`, from the front door. */
+export const requestIdOf = (req: FastifyRequest): string | null =>
   readHeader(req, REQUEST_ID_HEADER) ?? null
 
 /** Path param on the matched route, when that route has it. */
@@ -76,6 +78,15 @@ type ReqState = {
 }
 
 const state = new WeakMap<FastifyRequest, ReqState>()
+
+/**
+ * The request's server span as a trace context: the parent of a downstream call, which
+ * sends it as `traceparent` with `propagation.inject`.
+ */
+export const traceContextOf = (req: FastifyRequest): Context => {
+  const span = state.get(req)?.span
+  return span ? trace.setSpan(context.active(), span) : context.active()
+}
 
 const pathOf = (url: string): string => url.split("?")[0] ?? url
 

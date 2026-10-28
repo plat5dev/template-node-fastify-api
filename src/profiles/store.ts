@@ -38,4 +38,14 @@ export class ProfilesStore {
         .run(p.bio, p.updated_at, p.user_id)
     })
   }
+
+  /**
+   * Deletes the person's profile, with their account. Deleting none is fine, so it can run
+   * again for the same person.
+   */
+  delete(userId: string): void {
+    trackDb("profiles.delete", () => {
+      this.db.prepare(`DELETE FROM profiles WHERE user_id = ?`).run(userId)
+    })
+  }
 }

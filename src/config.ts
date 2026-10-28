@@ -55,8 +55,16 @@ export type AppConfig = {
   readonly port: number
   readonly internalPort: number
   readonly databasePath: string
-  /** Identity's internal base URL, for the lifecycle feed. Unset: the feed isn't read. */
+  /**
+   * Identity's internal base URL, for its tree and user feeds and the assignee check.
+   * Unset: the feeds aren't read, and a task with an assignee is a 503.
+   */
   readonly identityInternalUrl: string | undefined
+  /**
+   * The permission a task's assignee needs on its project: the deployment's name for it,
+   * never the code's.
+   */
+  readonly taskAssigneePermission: string
   readonly serviceName: string
   readonly serviceNamespace: string
   readonly serviceVersion: string
@@ -73,13 +81,24 @@ export type AppConfig = {
   readonly tracesSamplerRatio: number
 }
 
+/**
+ * Reads the config from the environment. Throws when `TASK_ASSIGNEE_PERMISSION`, the one
+ * it requires, is unset or empty: the API won't start without it.
+ */
 export const loadConfig = (): AppConfig => {
+  const taskAssigneePermission = optionalNonEmpty("TASK_ASSIGNEE_PERMISSION")
+  if (taskAssigneePermission === undefined) {
+    throw new Error(
+      "TASK_ASSIGNEE_PERMISSION is unset or empty: set it to the permission an assignee needs on the task's project (the starter's is project:read)"
+    )
+  }
   const deploymentEnvOtel = optionalNonEmpty("OTEL_DEPLOYMENT_ENV")
   return {
     port: envInt("PORT", 3000),
     internalPort: envInt("INTERNAL_PORT", 3001),
     databasePath: optionalNonEmpty("DATABASE_PATH") ?? "./data/app.db",
     identityInternalUrl: optionalNonEmpty("IDENTITY_INTERNAL_URL"),
+    taskAssigneePermission,
     serviceName: optionalNonEmpty("OTEL_SERVICE_NAME") ?? "api",
     serviceNamespace: optionalNonEmpty("OTEL_SERVICE_NAMESPACE") ?? "api",
     serviceVersion: optionalNonEmpty("OTEL_SERVICE_VERSION") ?? "0.0.0",

@@ -21,4 +21,4 @@ app:
 # To run the API on your own machine instead: plat5 start -x app, then
 next:
   - pnpm install
-  - pnpm run dev
+  - TASK_ASSIGNEE_PERMISSION=project:read pnpm run dev

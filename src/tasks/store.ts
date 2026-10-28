@@ -3,7 +3,8 @@ import { trackDb } from "../db.js"
 import { trim, type Page } from "../pagination.js"
 import type { Task } from "../schemas/common.js"
 
-const COLUMNS = "id, environment_id, title, status, created_by, created_at, updated_at"
+const COLUMNS =
+  "id, environment_id, title, status, assignee_id, created_by, created_at, updated_at"
 
 export class TasksStore {
   constructor(private readonly db: Db) {}
@@ -33,12 +34,13 @@ export class TasksStore {
   insert(t: Task): void {
     trackDb("tasks.insert", () => {
       this.db
-        .prepare(`INSERT INTO tasks (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .prepare(`INSERT INTO tasks (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           t.id,
           t.environment_id,
           t.title,
           t.status,
+          t.assignee_id,
           t.created_by,
           t.created_at,
           t.updated_at
@@ -50,10 +52,10 @@ export class TasksStore {
     trackDb("tasks.update", () => {
       this.db
         .prepare(
-          `UPDATE tasks SET title = ?, status = ?, updated_at = ?
+          `UPDATE tasks SET title = ?, status = ?, assignee_id = ?, updated_at = ?
            WHERE id = ? AND environment_id = ?`
         )
-        .run(t.title, t.status, t.updated_at, t.id, t.environment_id)
+        .run(t.title, t.status, t.assignee_id, t.updated_at, t.id, t.environment_id)
     })
   }
 

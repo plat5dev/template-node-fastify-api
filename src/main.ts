@@ -4,6 +4,7 @@ import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox"
 import swagger from "@fastify/swagger"
 import swaggerUi from "@fastify/swagger-ui"
 import { createServer } from "node:http"
+import { AccessClient } from "./access.js"
 import { loadConfig } from "./config.js"
 import { connect, migrate, type Db } from "./db.js"
 import { LifecycleConsumer } from "./lifecycle.js"
@@ -45,7 +46,12 @@ await app.register(swagger, {
 await app.register(swaggerUi, { routePrefix: "/docs" })
 
 registerProfileRoutes(app, profiles)
-registerTaskRoutes(app, tasks)
+registerTaskRoutes(
+  app,
+  tasks,
+  new AccessClient(config.identityInternalUrl),
+  config.taskAssigneePermission
+)
 
 const internal = createServer(async (req, res) => {
   const url = req.url?.split("?")[0] ?? "/"
@@ -69,7 +75,7 @@ const internal = createServer(async (req, res) => {
 })
 
 const lifecycle = config.identityInternalUrl
-  ? new LifecycleConsumer(config.identityInternalUrl, db, tasks)
+  ? new LifecycleConsumer(config.identityInternalUrl, db, tasks, profiles)
   : undefined
 
 const shutdown = async (signal: string) => {
@@ -116,7 +122,7 @@ if (lifecycle) {
       timestamp: new Date().toISOString(),
       level: "warn",
       message:
-        "IDENTITY_INTERNAL_URL is unset: not reading the lifecycle feed, so a purged environment's tasks are kept"
+        "IDENTITY_INTERNAL_URL is unset: not reading identity's feeds, so a purged environment's tasks and a deleted person's profile are kept, and a task's assignee can't be checked (503)"
     })
   )
 }

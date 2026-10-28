@@ -1,4 +1,4 @@
-import { metrics, trace } from "@opentelemetry/api"
+import { metrics, propagation, trace } from "@opentelemetry/api"
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http"
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
 import { resourceFromAttributes } from "@opentelemetry/resources"
@@ -6,7 +6,7 @@ import {
   AggregationTemporality,
   PeriodicExportingMetricReader
 } from "@opentelemetry/sdk-metrics"
-import { NodeSDK } from "@opentelemetry/sdk-node"
+import { core, NodeSDK } from "@opentelemetry/sdk-node"
 import {
   BatchSpanProcessor,
   ParentBasedSampler,
@@ -72,6 +72,11 @@ export const initTelemetry = (config: AppConfig): TelemetryHandle => {
 
   const enableTraces = tracesOtlpEnabled(config)
   const enableMetricsOtlp = metricsOtlpEnabled(config)
+
+  // The SDK registers a propagator only when it exports traces. Without one, traceparent
+  // still passes from the front door to downstream calls (plat5
+  // docs/guides/write-a-service.md#rules).
+  if (!enableTraces) propagation.setGlobalPropagator(new core.W3CTraceContextPropagator())
 
   if (!enableTraces && !enableMetricsOtlp) {
     // Still bind instruments so dual-write is a no-op against the global meter.
