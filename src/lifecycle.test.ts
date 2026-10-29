@@ -3,7 +3,7 @@ import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
 import { test, type TestContext } from "node:test"
 import { connect, migrate } from "./db.js"
-import { LifecycleConsumer, type TreeEvent, type UserEvent } from "./lifecycle.js"
+import { decodePage, LifecycleConsumer, type TreeEvent, type UserEvent } from "./lifecycle.js"
 import { ProfilesStore } from "./profiles/store.js"
 import { TasksStore } from "./tasks/store.js"
 
@@ -186,4 +186,29 @@ test("reading an event twice is harmless", async (t) => {
     s.logged().some((line) => line.level === "error"),
     false
   )
+})
+
+test("a page as Go decodes it", () => {
+  assert.deepEqual(decodePage("tree", "tree_events", { tree_events: null, has_more: null }), {
+    events: [],
+    hasMore: false
+  })
+  const { events } = decodePage("tree", "tree_events", {
+    tree_events: [{ id: "7", Type: "node.purged", kind: null, extra: 1 }, null],
+    has_more: true
+  })
+  assert.deepEqual(events[0], { id: "7", type: "node.purged", kind: "", node_id: "", user_id: "" })
+  assert.equal(events[1]!.id, "")
+  for (const page of [
+    [],
+    null,
+    { has_more: false },
+    { tree_events: [] },
+    { tree_events: {}, has_more: false },
+    { tree_events: [], has_more: "no" },
+    { tree_events: [{ id: 7 }], has_more: false },
+    { tree_events: ["x"], has_more: false }
+  ]) {
+    assert.throws(() => decodePage("tree", "tree_events", page), JSON.stringify(page))
+  }
 })

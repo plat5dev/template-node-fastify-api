@@ -11,7 +11,7 @@ const before = process.env.TASK_ASSIGNEE_PERMISSION
 test.afterEach(() => setPermission(before))
 
 test("TASK_ASSIGNEE_PERMISSION unset or empty: the API won't start", () => {
-  for (const value of [undefined, "", "  "]) {
+  for (const value of [undefined, ""]) {
     setPermission(value)
     assert.throws(loadConfig, {
       message:
@@ -23,4 +23,9 @@ test("TASK_ASSIGNEE_PERMISSION unset or empty: the API won't start", () => {
 test("TASK_ASSIGNEE_PERMISSION names the assignee's permission", () => {
   setPermission("tasks:assignable")
   assert.equal(loadConfig().taskAssigneePermission, "tasks:assignable")
+})
+
+test("TASK_ASSIGNEE_PERMISSION is taken as set, white space and all", () => {
+  setPermission("  ")
+  assert.equal(loadConfig().taskAssigneePermission, "  ")
 })

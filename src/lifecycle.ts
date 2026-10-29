@@ -18,6 +18,49 @@ import type { TasksStore } from "./tasks/store.js"
 export const INTERVAL_MS = 5_000
 const PAGE_SIZE = 100
 
+/**
+ * An event as Go's decoder reads it into the fields the API reads: each a string, "" when
+ * absent or null; any other type is an error. A null event is all "".
+ */
+const decodeEvent = (raw: unknown): Record<string, string> => {
+  if (raw === null) raw = {}
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("event is not an object")
+  const out: Record<string, string> = { id: "", type: "", kind: "", node_id: "", user_id: "" }
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const name = Object.keys(out).find((n) => n === key || n === key.toLowerCase())
+    if (name === undefined || value === null) continue
+    if (typeof value !== "string") throw new Error(`event ${name} is not a string`)
+    out[name] = value
+  }
+  return out
+}
+
+/**
+ * A feed page: its events under `key`, a list or null, and `has_more`, a boolean or null.
+ * Either missing, or of another type, is an error.
+ */
+export const decodePage = (
+  feed: string,
+  key: string,
+  page: unknown
+): { events: Record<string, string>[]; hasMore: boolean } => {
+  if (typeof page !== "object" || page === null || Array.isArray(page)) {
+    throw new Error(`${feed} feed: not an object`)
+  }
+  const p = page as Record<string, unknown>
+  if (!(key in p)) throw new Error(`${feed} feed: ${key}: missing`)
+  const events = p[key]
+  if (events !== null && !Array.isArray(events)) {
+    throw new Error(`${feed} feed: ${key}: not a list`)
+  }
+  if (!("has_more" in p)) throw new Error(`${feed} feed: has_more: missing`)
+  const more = p.has_more
+  if (more !== null && typeof more !== "boolean") {
+    throw new Error(`${feed} feed: has_more: not a boolean`)
+  }
+  return { events: (events ?? []).map(decodeEvent), hasMore: more === true }
+}
+
 /** The part of a tree event the API reads. `kind` and `node_id` are a node event's. */
 export type TreeEvent = {
   id: string
@@ -95,11 +138,17 @@ export class LifecycleConsumer {
     clearTimeout(this.timer)
   }
 
+  /**
+   * Polls on a fixed beat from the start, like a ticker: the next poll is at the next beat,
+   * or at once when a poll took longer than the interval (missed beats aren't made up).
+   */
   private async tick(): Promise<void> {
+    const started = performance.now()
     await this.poll()
-    if (!this.stopped.signal.aborted) {
-      this.timer = setTimeout(() => void this.tick(), INTERVAL_MS)
-    }
+    if (this.stopped.signal.aborted) return
+    const elapsed = performance.now() - started
+    const delay = elapsed >= INTERVAL_MS ? 0 : INTERVAL_MS - elapsed
+    this.timer = setTimeout(() => void this.tick(), delay)
   }
 
   /**
@@ -170,8 +219,8 @@ export class LifecycleConsumer {
       signal: AbortSignal.any([this.stopped.signal, AbortSignal.timeout(10_000)])
     })
     if (res.status !== 200) throw new Error(`${feed.name} feed answered ${res.status}`)
-    const page = (await res.json()) as Record<string, unknown>
-    return { events: page[feed.key] as E[], hasMore: page.has_more === true }
+    const { events, hasMore } = decodePage(feed.name, feed.key, await res.json())
+    return { events: events as E[], hasMore }
   }
 
   /** The last event id acted on in the feed, or "" before the first. */

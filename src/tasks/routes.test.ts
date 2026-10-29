@@ -1,17 +1,16 @@
 import { propagation } from "@opentelemetry/api"
-import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox"
 import { core } from "@opentelemetry/sdk-node"
-import Fastify from "fastify"
 import assert from "node:assert/strict"
 import { createServer, type IncomingHttpHeaders } from "node:http"
 import type { AddressInfo } from "node:net"
 import { test, type TestContext } from "node:test"
 import { AccessClient } from "../access.js"
+import { buildApp } from "../app.js"
 import { CREATED_HEADER, DETAILS_HEADER } from "../audit.js"
 import { connect, migrate } from "../db.js"
-import { registerObservability } from "../middleware/observability.js"
+import { ProfilesStore } from "../profiles/store.js"
 import type { Task } from "../schemas/common.js"
-import { MEMBER_HEADER, PROJECT_HEADER, registerTaskRoutes } from "./routes.js"
+import { MEMBER_HEADER, PROJECT_HEADER } from "./routes.js"
 import { TasksStore } from "./store.js"
 
 // initTelemetry's propagator when nothing exports traces.
@@ -68,16 +67,18 @@ const serveIdentity = async (t: TestContext) => {
 /** The task routes, with identity allowing every assignee until told otherwise. */
 const newApp = async (t: TestContext, opts: { identityUnset?: boolean } = {}) => {
   // Request logs, out of the test output.
-  t.mock.method(console, "log", () => {})
+  const logs = t.mock.method(console, "log", () => {})
   const identity = await serveIdentity(t)
   const db = connect(":memory:")
   migrate(db)
   t.after(() => db.close())
-  const app = Fastify().withTypeProvider<TypeBoxTypeProvider>()
-  registerObservability(app)
-  const access = new AccessClient(opts.identityUnset ? undefined : identity.url)
-  registerTaskRoutes(app, new TasksStore(db), access, permission)
-  await app.ready()
+  const store = new TasksStore(db)
+  const app = await buildApp({
+    tasks: store,
+    profiles: new ProfilesStore(db),
+    access: new AccessClient(opts.identityUnset ? undefined : identity.url),
+    assigneePermission: permission
+  })
   t.after(() => app.close())
 
   /**
@@ -85,7 +86,7 @@ const newApp = async (t: TestContext, opts: { identityUnset?: boolean } = {}) =>
    * environment's project id, but for the header in `without`.
    */
   const send = (
-    method: "GET" | "POST" | "PATCH" | "DELETE",
+    method: "GET" | "POST" | "PATCH" | "DELETE" | "PUT" | "OPTIONS" | "HEAD",
     url: string,
     body?: string,
     opts: { without?: string; headers?: Record<string, string> } = {}
@@ -120,7 +121,13 @@ const newApp = async (t: TestContext, opts: { identityUnset?: boolean } = {}) =>
     return res.json()
   }
 
-  return { identity, send, create, get, list }
+  /** The request log lines written so far. */
+  const accessLines = () =>
+    logs.mock.calls
+      .map((call) => JSON.parse(String(call.arguments[0])) as Record<string, unknown>)
+      .filter((line) => line.message === "request completed")
+
+  return { identity, send, create, get, list, app, db, store, accessLines }
 }
 
 type ErrorBody = {
@@ -383,4 +390,381 @@ test("update order: the body, then the task, then identity", async (t) => {
   res = await send("PATCH", missing, assign, { without: PROJECT_HEADER })
   assert.equal(res.statusCode, 404, "assign a missing task without a project")
   assert.deepEqual(identity.asked, [])
+})
+
+// Parity with the Go starter: each test below pins one behavior the two share.
+
+const FALLBACK = "That doesn't look right."
+
+/** The 422 for one field. */
+const assertField = (
+  res: { statusCode: number; json: <T>() => T },
+  path: string,
+  message: string,
+  label = ""
+) => {
+  assert.equal(res.statusCode, 422, label)
+  const { error } = res.json<ErrorBody>()
+  assert.equal(error.code, "VALIDATION_ERROR", label)
+  assert.equal(error.message, message, label)
+  assert.deepEqual(error.details.fields, [{ path, message }], label)
+}
+
+test("title and status errors, word for word", async (t) => {
+  const { send, create } = await newApp(t)
+  const task = await create(environment, "Launch")
+  const taskPath = `${tasksPath}/${task.id}`
+  for (const [method, url] of [
+    ["POST", tasksPath],
+    ["PATCH", taskPath]
+  ] as const) {
+    for (const title of ["", "   ", "\u3000\u0085"]) {
+      const res = await send(method, url, JSON.stringify({ title }))
+      assertField(res, "title", "Title is required.", `${method} ${JSON.stringify(title)}`)
+    }
+    let res = await send(method, url, JSON.stringify({ title: "x".repeat(256) }))
+    assertField(res, "title", "Title is too long.", method)
+    for (const status of ["TODO", "in progress", " done", ""]) {
+      res = await send(method, url, JSON.stringify({ title: "Launch", status }))
+      assertField(res, "status", "Status must be todo, in progress, or done.", status)
+    }
+  }
+  // A create without a title.
+  for (const body of [`{}`, `{"title":null}`, `null`]) {
+    const res = await send("POST", tasksPath, body)
+    assertField(res, "title", "Title is required.", body)
+  }
+})
+
+test("titles are trimmed of Unicode white space, as Go's strings.TrimSpace", async (t) => {
+  const { send, create } = await newApp(t)
+  let res = await send("POST", tasksPath, JSON.stringify({ title: " \t\u00a0Launch\u0085\u3000 " }))
+  assert.equal(res.statusCode, 201)
+  assert.equal(res.json<Task>().title, "Launch")
+  // U+FEFF isn't white space to Go.
+  res = await send("POST", tasksPath, JSON.stringify({ title: "\ufeffLaunch" }))
+  assert.equal(res.json<Task>().title, "\ufeffLaunch")
+  const task = await create(environment, "Launch")
+  res = await send("PATCH", `${tasksPath}/${task.id}`, JSON.stringify({ title: "  Renamed  " }))
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json<Task>().title, "Renamed")
+})
+
+test("a title's limit counts characters, not UTF-16 units", async (t) => {
+  const { send } = await newApp(t)
+  for (const [title, ok] of [
+    ["é".repeat(255), true],
+    ["😀".repeat(255), true],
+    ["é".repeat(256), false],
+    ["😀".repeat(256), false]
+  ] as const) {
+    const res = await send("POST", tasksPath, JSON.stringify({ title }))
+    if (ok) assert.equal(res.statusCode, 201, title.slice(0, 2))
+    else assertField(res, "title", "Title is too long.", title.slice(0, 2))
+  }
+})
+
+test("DELETE never reads its body", async (t) => {
+  const { send, create } = await newApp(t)
+  for (const [contentType, body] of [
+    ["application/json", ""],
+    ["application/json", "{"],
+    ["text/plain", "hello"],
+    ["not a type", "{}"],
+    [undefined, "x"]
+  ] as const) {
+    const task = await create(environment, "Launch")
+    const res = await send(
+      "DELETE",
+      `${tasksPath}/${task.id}`,
+      body,
+      contentType === undefined
+        ? { without: "content-type" }
+        : { headers: { "content-type": contentType } }
+    )
+    assert.equal(res.statusCode, 204, `${contentType} ${body}`)
+  }
+})
+
+test("a known path in another method, or OPTIONS, is the unknown route's 404", async (t) => {
+  const { send, create } = await newApp(t)
+  const task = await create(environment, "Launch")
+  const taskPath = `${tasksPath}/${task.id}`
+  for (const [method, url] of [
+    ["PUT", taskPath],
+    ["POST", taskPath],
+    ["DELETE", tasksPath],
+    ["PATCH", tasksPath],
+    ["PATCH", `/users/${member}/profile`],
+    ["OPTIONS", tasksPath],
+    ["OPTIONS", taskPath],
+    ["GET", "/nope"],
+    ["GET", `/users/${member}`]
+  ] as const) {
+    const res = await send(method, url, method === "OPTIONS" || method === "GET" ? undefined : "{}", {
+      headers: { "x-request-id": "req-9" }
+    })
+    assert.equal(res.statusCode, 404, `${method} ${url}`)
+    assert.equal(res.headers.allow, undefined, `${method} ${url}`)
+    assert.deepEqual(res.json(), {
+      error: {
+        type: "invalid_request_error",
+        code: "NOT_FOUND",
+        message: "Resource not found.",
+        request_id: "req-9",
+        details: { resource: "resource", id: null }
+      }
+    })
+  }
+  // HEAD on a GET route is the GET's answer, without a body; a trailing slash is the same route.
+  let res = await send("HEAD", tasksPath)
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.body, "")
+  res = await send("GET", `${tasksPath}/`)
+  assert.equal(res.statusCode, 200)
+})
+
+test("an unexpected error is the fallback 500, never its own text", async (t) => {
+  const { send, store } = await newApp(t)
+  t.mock.method(store, "listByEnvironment", () => {
+    throw Object.assign(new Error("SQLITE_BUSY: database is locked at /data/app.db"), {
+      statusCode: 418
+    })
+  })
+  const res = await send("GET", tasksPath)
+  assert.equal(res.statusCode, 500)
+  assert.deepEqual(res.json(), {
+    error: {
+      type: "api_error",
+      code: "INTERNAL_ERROR",
+      message: "An unexpected error occurred.",
+      request_id: null,
+      details: null
+    }
+  })
+})
+
+test("a body not sent as JSON is a 422 at body, and nothing is written", async (t) => {
+  const { send, create, list } = await newApp(t)
+  const task = await create(environment, "Launch")
+  const cases: [contentType: string | undefined, body: string][] = [
+    [undefined, `{"title":"Other"}`],
+    [undefined, ""],
+    ["text/plain", `{"title":"Other"}`],
+    ["text/plain", ""],
+    ["application/x-www-form-urlencoded", "title=Other"],
+    ["application/jsonx", `{"title":"Other"}`],
+    ["", `{"title":"Other"}`],
+    ["not a type", `{"title":"Other"}`]
+  ]
+  for (const [contentType, body] of cases) {
+    for (const [method, url] of [
+      ["POST", tasksPath],
+      ["PATCH", `${tasksPath}/${task.id}`]
+    ] as const) {
+      const res = await send(
+        method,
+        url,
+        body,
+        contentType === undefined
+          ? { without: "content-type" }
+          : { headers: { "content-type": contentType } }
+      )
+      assertField(res, "body", FALLBACK, `${method} ${contentType} ${body}`)
+    }
+  }
+  const { tasks } = await list()
+  assert.equal(tasks.length, 1)
+  assert.equal(tasks[0]!.title, "Launch")
+})
+
+test("JSON is application/json with any parameters, or application/…+json", async (t) => {
+  const { send } = await newApp(t)
+  for (const contentType of [
+    "application/json; charset=utf-8",
+    "Application/JSON",
+    "application/json;charset=UTF-8;",
+    'application/json; charset="utf-8"',
+    "application/merge-patch+json",
+    "application/vnd.api+json"
+  ]) {
+    const res = await send("POST", tasksPath, `{"title":"Launch"}`, {
+      headers: { "content-type": contentType }
+    })
+    assert.equal(res.statusCode, 201, contentType)
+  }
+})
+
+test("a body that isn't a JSON object is a 422 at body", async (t) => {
+  const { send, create } = await newApp(t)
+  const task = await create(environment, "Launch")
+  for (const body of ["", " ", "{", `{"title":"a"} x`, `[{"title":"a"}]`, `"a"`, "5", "true"]) {
+    for (const [method, url] of [
+      ["POST", tasksPath],
+      ["PATCH", `${tasksPath}/${task.id}`]
+    ] as const) {
+      assertField(await send(method, url, body), "body", FALLBACK, `${method} ${body}`)
+    }
+  }
+  // null is an empty object: a no-op update.
+  const res = await send("PATCH", `${tasksPath}/${task.id}`, "null")
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json<Task>().title, "Launch")
+})
+
+test("a field of the wrong JSON type is a 422 at body, never coerced", async (t) => {
+  const { send, create } = await newApp(t)
+  const task = await create(environment, "Launch")
+  for (const body of [
+    `{"title":123}`,
+    `{"title":true}`,
+    `{"title":["a"]}`,
+    `{"title":"Launch","status":5}`,
+    // Every field's type before any field's value.
+    `{"title":"","status":5}`
+  ]) {
+    for (const [method, url] of [
+      ["POST", tasksPath],
+      ["PATCH", `${tasksPath}/${task.id}`]
+    ] as const) {
+      assertField(await send(method, url, body), "body", FALLBACK, `${method} ${body}`)
+    }
+  }
+})
+
+test("keys match their fields ignoring case, as Go's decoder", async (t) => {
+  const { send } = await newApp(t)
+  const res = await send("POST", tasksPath, `{"TITLE":"Launch","Status":"done","other":1}`)
+  assert.equal(res.statusCode, 201)
+  assert.equal(res.json<Task>().title, "Launch")
+  assert.equal(res.json<Task>().status, "done")
+})
+
+test("PATCH and DELETE answer 404 when the scoped write finds no row", async (t) => {
+  const { send, create, db, store } = await newApp(t)
+  // The task is deleted between the read and the write.
+  const find = store.findInEnvironment.bind(store)
+  t.mock.method(store, "findInEnvironment", (environmentId: string, taskId: string) => {
+    const found = find(environmentId, taskId)
+    db.prepare(`DELETE FROM tasks WHERE id = ?`).run(taskId)
+    return found
+  })
+  for (const method of ["PATCH", "DELETE"] as const) {
+    const task = await create(environment, "Launch")
+    const res = await send(method, `${tasksPath}/${task.id}`, method === "PATCH" ? `{"status":"done"}` : undefined)
+    assert.equal(res.statusCode, 404, method)
+    assert.deepEqual(res.json<{ error: { details: unknown } }>().error.details, {
+      resource: "task",
+      id: task.id
+    })
+    assert.equal(res.headers[DETAILS_HEADER.toLowerCase()], undefined, method)
+  }
+})
+
+test("a body over 1 MiB is a 413 before anything else, on any route", async (t) => {
+  const { send } = await newApp(t)
+  const big = `{"title":"${"x".repeat(1 << 20)}"}`
+  for (const [method, url, without] of [
+    ["POST", tasksPath, MEMBER_HEADER],
+    ["POST", tasksPath, undefined],
+    ["PATCH", `${tasksPath}/01jd8x3k7q00000000000000zz`, undefined],
+    ["PUT", `/users/${member}/profile`, undefined],
+    ["POST", "/nope", undefined]
+  ] as const) {
+    const res = await send(method, url, big, without ? { without } : {})
+    assert.equal(res.statusCode, 413, `${method} ${url}`)
+    assert.equal(res.headers.allow, undefined)
+    assert.deepEqual(res.json(), {
+      error: {
+        type: "invalid_request_error",
+        code: "PAYLOAD_TOO_LARGE",
+        message: "Request body is too large.",
+        request_id: null,
+        details: { max_size_bytes: 1048576 }
+      }
+    })
+  }
+  // Exactly 1 MiB is read.
+  const fits = `{"title":"a","pad":"${"x".repeat((1 << 20) - 22)}"}`
+  assert.equal(Buffer.byteLength(fits), 1 << 20)
+  assert.equal((await send("POST", tasksPath, fits)).statusCode, 201)
+})
+
+test("list parameters, as Go reads them", async (t) => {
+  const { send, create } = await newApp(t)
+  for (const title of ["a", "b"]) await create(environment, title)
+  const count = async (query: string) => {
+    const res = await send("GET", `${tasksPath}${query}`)
+    assert.equal(res.statusCode, 200, query)
+    return res.json<{ tasks: Task[] }>().tasks.length
+  }
+  assert.equal(await count("?limit=%2B1"), 1, "a sign, as strconv.Atoi takes it")
+  assert.equal(await count("?limit=001"), 1)
+  assert.equal(await count("?limit=%201%20"), 1, "trimmed")
+  assert.equal(await count("?limit=1000"), 2, "clamped")
+  assert.equal(await count("?limit="), 2, "empty is the default")
+  assert.equal(await count("?limit=1&limit=abc"), 1, "the first value")
+  for (const limit of ["abc", "1.5", "0", "-1", "-0", "1e2", "99999999999999999999", "%2B"]) {
+    assertField(await send("GET", `${tasksPath}?limit=${limit}`), "limit", FALLBACK, limit)
+  }
+  for (const after of ["nope", "01JD8X3K7Q0000000000000000", "81jd8x3k7q0000000000000000", "01jd8x3k7q000000000000000i"]) {
+    const res = await send("GET", `${tasksPath}?starting_after=${after}`)
+    assertField(res, "starting_after", FALLBACK, after)
+  }
+  // The limit first.
+  assertField(await send("GET", `${tasksPath}?limit=x&starting_after=x`), "limit", FALLBACK)
+})
+
+test("request_id is X-Request-ID as sent, or null", async (t) => {
+  const { send } = await newApp(t)
+  for (const [sent, want] of [
+    [undefined, null],
+    ["", null],
+    [" ", " "],
+    ["req-1", "req-1"]
+  ] as const) {
+    const res = await send(
+      "GET",
+      `${tasksPath}/01jd8x3k7q00000000000000zz`,
+      undefined,
+      sent === undefined ? {} : { headers: { "x-request-id": sent } }
+    )
+    assert.equal(res.json<{ error: { request_id: unknown } }>().error.request_id, want, String(sent))
+  }
+})
+
+test("audit details: sorted keys, HTML and non-ASCII escaped", async (t) => {
+  const { send } = await newApp(t)
+  const res = await send("POST", tasksPath, JSON.stringify({ title: "<é😀&>" }))
+  const task = res.json<Task>()
+  assert.equal(
+    res.headers[DETAILS_HEADER.toLowerCase()],
+    `{"assignee_id":null,"status":"todo","task_id":"${task.id}","title":"\\u003c\\u00e9\\ud83d\\ude00\\u0026\\u003e"}`
+  )
+})
+
+test("times are RFC 3339 UTC without trailing zeros, as Go's RFC3339Nano", async (t) => {
+  const { create } = await newApp(t)
+  const task = await create(environment, "Launch")
+  assert.match(task.created_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d*[1-9])?Z$/)
+  assert.equal(task.created_at, task.updated_at)
+})
+
+test("the request log: the route's template or unknown, warn on a 4xx", async (t) => {
+  const { send, accessLines } = await newApp(t)
+  await send("GET", tasksPath)
+  await send("GET", `${tasksPath}/01jd8x3k7q00000000000000zz`, undefined, {
+    headers: { "x-request-id": "req-2" }
+  })
+  await send("GET", "/nope/01jd8x3k7q00000000000000zz")
+  const [ok, missing, unknown] = accessLines()
+  assert.equal(ok!.route, "/environments/:environment_id/tasks")
+  assert.equal(ok!.level, "info")
+  assert.equal("request_id" in ok!, false)
+  assert.equal(ok!.node_id, environment)
+  assert.equal(ok!.member_id, member)
+  assert.equal(missing!.level, "warn")
+  assert.equal(missing!.request_id, "req-2")
+  assert.equal(unknown!.route, "unknown")
+  assert.equal(unknown!.level, "warn")
 })

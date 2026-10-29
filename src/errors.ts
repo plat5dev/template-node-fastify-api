@@ -89,7 +89,7 @@ export const notFound = (resource: string, id: string | null): ApiError =>
     status: 404
   })
 
-export const conflict = (field: string, value: string): ApiError =>
+export const conflict = (field: string, value: string | null): ApiError =>
   new ApiError({
     type: "invalid_request_error",
     code: "CONFLICT",
@@ -98,7 +98,10 @@ export const conflict = (field: string, value: string): ApiError =>
     status: 409
   })
 
-export const payloadTooLarge = (maxSizeBytes: number): ApiError =>
+/** The largest request body the API reads: 1 MiB. */
+export const MAX_BODY_BYTES = 1 << 20
+
+export const payloadTooLarge = (maxSizeBytes = MAX_BODY_BYTES): ApiError =>
   new ApiError({
     type: "invalid_request_error",
     code: "PAYLOAD_TOO_LARGE",
@@ -107,13 +110,12 @@ export const payloadTooLarge = (maxSizeBytes: number): ApiError =>
     status: 413
   })
 
-export const internalError = (
-  message = "An unexpected error occurred."
-): ApiError =>
+/** A 500. Its message is always the fallback sentence: never a framework's or a library's. */
+export const internalError = (): ApiError =>
   new ApiError({
     type: "api_error",
     code: "INTERNAL_ERROR",
-    message,
+    message: "An unexpected error occurred.",
     details: null,
     status: 500,
     kind: "internal"

@@ -1,4 +1,4 @@
-import type { FastifyRequest } from "fastify"
+import type { FastifyReply, FastifyRequest } from "fastify"
 import {
   context,
   type Context,
@@ -8,28 +8,36 @@ import {
   SpanStatusCode,
   trace
 } from "@opentelemetry/api"
+import { keepContentType } from "../body.js"
 import {
   ApiError,
-  FALLBACK_VALIDATION,
+  conflict,
   fieldError,
+  internalError,
+  MAX_BODY_BYTES,
   notFound,
-  payloadTooLarge
+  payloadTooLarge,
+  serviceUnavailable
 } from "../errors.js"
 import { observeRequest } from "../metrics.js"
 import type { App } from "../types.js"
 
 const REQUEST_ID_HEADER = "x-request-id"
 
-const readHeader = (req: FastifyRequest, name: string): string | undefined => {
+/** A request header's first value, as sent, or "" without one. */
+export const headerOf = (req: FastifyRequest, name: string): string => {
+  const distinct = (req.raw as { headersDistinct?: Record<string, string[] | undefined> })
+    .headersDistinct?.[name]
+  if (Array.isArray(distinct) && distinct[0] !== undefined) return distinct[0]
   const value = req.headers[name]
-  if (typeof value === "string" && value.trim() !== "") return value
-  if (Array.isArray(value) && value[0] && value[0].trim() !== "") return value[0]
-  return undefined
+  if (typeof value === "string") return value
+  if (Array.isArray(value) && value[0] !== undefined) return value[0]
+  return ""
 }
 
-/** The request's `X-Request-ID`, from the front door. */
+/** The request's `X-Request-ID`, from the front door: as sent, or null without one. */
 export const requestIdOf = (req: FastifyRequest): string | null =>
-  readHeader(req, REQUEST_ID_HEADER) ?? null
+  headerOf(req, REQUEST_ID_HEADER) || null
 
 /** Path param on the matched route, when that route has it. */
 const pathParam = (req: FastifyRequest, name: string): string | undefined => {
@@ -50,31 +58,16 @@ const callerIds = (req: FastifyRequest): [field: string, value: string][] => {
   if (userId) ids.push(["user_id", userId])
   const environmentId = pathParam(req, "environment_id")
   if (environmentId) ids.push(["node_id", environmentId])
-  const memberId = readHeader(req, "x-plat5-member-id")
+  const memberId = headerOf(req, "x-plat5-member-id")
   if (memberId) ids.push(["member_id", memberId])
   return ids
-}
-
-const ULID_OR_UUID =
-  /^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
-
-/** Low-cardinality route label for metrics (plat5 docs/reference/telemetry.md). */
-export const normalizeRoute = (path: string): string => {
-  const bare = path.split("?")[0] || "/"
-  const parts = bare.split("/").map((seg) => {
-    if (seg === "") return seg
-    if (ULID_OR_UUID.test(seg)) return "{id}"
-    if (/^\d+$/.test(seg)) return "{id}"
-    return seg
-  })
-  const joined = parts.join("/")
-  return joined.length > 80 ? joined.slice(0, 80) : joined
 }
 
 type ReqState = {
   started: number
   span: Span
-  errorKind?: string
+  /** The error the request was answered with, if any. */
+  error?: ApiError
 }
 
 const state = new WeakMap<FastifyRequest, ReqState>()
@@ -90,10 +83,7 @@ export const traceContextOf = (req: FastifyRequest): Context => {
 
 const pathOf = (url: string): string => url.split("?")[0] ?? url
 
-const stampTrace = (
-  line: Record<string, unknown>,
-  span: Span | undefined
-): void => {
+const stampTrace = (line: Record<string, unknown>, span: Span | undefined): void => {
   if (!span) return
   const sc = span.spanContext()
   if (!trace.isSpanContextValid(sc)) return
@@ -101,11 +91,50 @@ const stampTrace = (
   line.span_id = sc.spanId
 }
 
-const applyHttpStatus = (span: Span, status: number, errorKind?: string): void => {
+const applyHttpStatus = (span: Span, status: number, errorKind: string): void => {
   span.setAttribute("http.response.status_code", status)
   if (status < 500) return
-  span.setAttribute("error.kind", errorKind ?? "internal")
+  span.setAttribute("error.kind", errorKind)
   span.setStatus({ code: SpanStatusCode.ERROR })
+}
+
+/**
+ * Any error as the API's: its own as they are, a framework's by its status, and anything
+ * else the fallback 500. Never a framework's text in the message (plat5
+ * docs/reference/errors.md).
+ */
+const toApiError = (err: unknown): ApiError => {
+  if (err instanceof ApiError) return err
+  const statusCode =
+    typeof err === "object" && err !== null
+      ? (err as { statusCode?: unknown }).statusCode
+      : undefined
+  switch (statusCode) {
+    case 400:
+      return fieldError("body")
+    case 404:
+    case 405:
+      return notFound("resource", null)
+    case 409:
+      return conflict("", null)
+    case 413:
+      return payloadTooLarge()
+    case 503:
+      return serviceUnavailable()
+    default:
+      // A 401 too: authentication is the gateway's, so this service never answers one.
+      return internalError()
+  }
+}
+
+/** Answers `err` in the Plat5 envelope. Also the app's handler for Fastify's own errors. */
+export const sendError = (err: unknown, req: FastifyRequest, reply: FastifyReply): void => {
+  const apiErr = toApiError(err)
+  const s = state.get(req)
+  if (s) s.error = apiErr
+  // Never a 405 (errors.md has no such code), so no Allow header either.
+  reply.removeHeader("allow")
+  void reply.status(apiErr.status).send(apiErr.envelope(requestIdOf(req)))
 }
 
 export const registerObservability = (app: App): void => {
@@ -134,143 +163,69 @@ export const registerObservability = (app: App): void => {
     if (template) span.setAttribute("http.route", template)
     state.set(req, { started: performance.now(), span })
 
-    const requestId = readHeader(req, REQUEST_ID_HEADER)
+    const requestId = requestIdOf(req)
     if (requestId) span.setAttribute("request_id", requestId)
+
+    // Every body is kept as raw bytes, whatever its Content-Type (app.ts), with the
+    // Content-Type sent kept for the routes that read a body: one that doesn't, like
+    // DELETE, takes any body, and one that does answers 422 at body, never 415.
+    if (req.headers["content-type"] !== undefined) {
+      keepContentType(req, headerOf(req, "content-type"))
+      req.headers["content-type"] = "application/octet-stream"
+    }
+    // Too large is a 413 before anything else, on any route.
+    const length = Number(req.headers["content-length"] ?? 0)
+    if (length > MAX_BODY_BYTES) throw payloadTooLarge()
   })
 
   app.addHook("onResponse", async (req, reply) => {
     const s = state.get(req)
     const started = s?.started ?? performance.now()
-    const durationMs = Math.round((performance.now() - started) * 100) / 100
-    const durationSeconds = durationMs / 1000
+    // To the microsecond.
+    const durationMs = Math.floor((performance.now() - started) * 1000) / 1000
     const status = reply.statusCode
-    const route =
-      req.routeOptions.url ?? normalizeRoute(req.url.split("?")[0] ?? req.url)
-    const path = req.url.split("?")[0] ?? req.url
+    const template = req.routeOptions.url
+    const route = template || "unknown"
 
-    observeRequest(req.method, route, status, durationSeconds)
+    observeRequest(req.method, route, status, durationMs / 1000)
 
     const ids = callerIds(req)
+    const err = s?.error
+    const errorKind = err?.kind ?? "internal"
 
     if (s?.span) {
-      const template = req.routeOptions.url
       if (template) {
         s.span.updateName(`${req.method} ${template}`)
         s.span.setAttribute("http.route", template)
       }
       for (const [field, value] of ids) s.span.setAttribute(`plat5.${field}`, value)
-      applyHttpStatus(s.span, status, s.errorKind)
+      applyHttpStatus(s.span, status, errorKind)
       s.span.end()
     }
 
     const line: Record<string, unknown> = {
       timestamp: new Date().toISOString(),
-      level: status >= 500 ? "error" : "info",
+      level: status >= 500 ? "error" : status >= 400 ? "warn" : "info",
       message: "request completed",
-      route: path,
+      route,
       method: req.method,
       status,
-      duration_ms: durationMs,
-      request_id: requestIdOf(req)
+      duration_ms: durationMs
     }
+    const requestId = requestIdOf(req)
+    if (requestId) line.request_id = requestId
     for (const [field, value] of ids) line[field] = value
     if (status >= 500) {
-      line.error_kind = "internal"
-      line.error_message = "request failed"
+      line.error_kind = errorKind
+      line.error_message = err ? `${err.code}: ${err.message}` : "request failed"
     }
     stampTrace(line, s?.span)
     console.log(JSON.stringify(line))
   })
 
-  app.setNotFoundHandler((req, reply) =>
-    reply.status(404).send(notFound("resource", null).envelope(requestIdOf(req)))
-  )
+  // An unknown route, or a known path in a method it doesn't serve (OPTIONS included): the
+  // same 404 either way, never a 405.
+  app.setNotFoundHandler((req, reply) => sendError(notFound("resource", null), req, reply))
 
-  app.setErrorHandler((err, req, reply) => {
-    const requestId = requestIdOf(req)
-    const s = state.get(req)
-
-    if (err instanceof ApiError) {
-      if (err.status >= 500 && s) {
-        s.errorKind = err.kind
-        applyHttpStatus(s.span, err.status, err.kind)
-      }
-      return reply.status(err.status).send(err.envelope(requestId))
-    }
-
-    // Fastify request validation (JSON Schema/AJV) failures. AJV's own text is
-    // schema talk, not product copy (plat5 docs/reference/error-copy.md): name the
-    // field, in a sentence.
-    if (err && typeof err === "object" && "validation" in err) {
-      const validation = (err as { validation?: AjvIssue[] }).validation ?? []
-      // A union (anyOf of consts) fails once per branch: one field each.
-      const fields = validation
-        .map(ajvField)
-        .filter((f, i, all) => all.findIndex((g) => g.path === f.path) === i)
-      const apiErr = new ApiError({
-        type: "invalid_request_error",
-        code: "VALIDATION_ERROR",
-        message: fields[0]?.message ?? FALLBACK_VALIDATION,
-        details: { fields },
-        status: 422,
-        kind: "validation"
-      })
-      return reply.status(422).send(apiErr.envelope(requestId))
-    }
-
-    // Fastify's own client errors: a body that isn't JSON, or one over bodyLimit. Their
-    // text isn't product copy either: the envelope, with a fallback sentence.
-    const statusCode = (err as { statusCode?: number }).statusCode
-    if (statusCode === 400) {
-      return reply.status(422).send(fieldError("body").envelope(requestId))
-    }
-    if (statusCode === 413) {
-      const apiErr = payloadTooLarge(req.server.initialConfig.bodyLimit ?? 0)
-      return reply.status(413).send(apiErr.envelope(requestId))
-    }
-
-    if (s) {
-      s.errorKind = "internal"
-      applyHttpStatus(s.span, 500, "internal")
-    }
-
-    const apiErr = new ApiError({
-      type: "api_error",
-      code: "INTERNAL_ERROR",
-      message: "An unexpected error occurred.",
-      details: null,
-      status: 500,
-      kind: "internal"
-    })
-    return reply.status(500).send(apiErr.envelope(requestId))
-  })
-}
-
-type AjvIssue = {
-  instancePath?: string
-  keyword?: string
-  params?: { missingProperty?: string; limit?: number; allowedValues?: unknown[] }
-}
-
-/** One AJV issue as a field and a sentence. */
-const ajvField = (v: AjvIssue): { path: string; message: string } => {
-  const base = (v.instancePath ?? "").replace(/^\//, "").replace(/\//g, ".")
-  const missing = v.keyword === "required" ? v.params?.missingProperty : undefined
-  const path = missing ? (base ? `${base}.${missing}` : missing) : base || "body"
-  const field = path.split(".").pop() ?? path
-  const label = `${field.charAt(0).toUpperCase()}${field.slice(1).replace(/_/g, " ")}`
-  switch (v.keyword) {
-    case "required":
-      return { path, message: `${label} is required.` }
-    case "maxLength":
-      return { path, message: `${label} is too long.` }
-    case "minLength":
-      return { path, message: `${label} is required.` }
-    case "enum":
-    case "const":
-    case "anyOf":
-      return { path, message: `${label} isn't an allowed value.` }
-    default:
-      return { path, message: FALLBACK_VALIDATION }
-  }
+  app.setErrorHandler((err, req, reply) => sendError(err, req, reply))
 }

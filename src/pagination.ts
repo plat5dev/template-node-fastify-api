@@ -6,13 +6,13 @@
  * with the collection and `has_more`.
  */
 import { Type } from "@sinclair/typebox"
-import { isValid } from "ulid"
+import { isLowercaseUlid, trimSpace } from "./body.js"
 import { fieldError } from "./errors.js"
 
 export const DEFAULT_LIMIT = 50
 export const MAX_LIMIT = 100
 
-/** Query schema for list routes. Values are parsed by `parsePage`. */
+/** Query schema for list routes, for the OpenAPI. Values are read by `parsePage`. */
 export const listQuerySchema = Type.Object({
   limit: Type.Optional(
     Type.String({ description: "Default 50, max 100. Over the max is clamped." })
@@ -22,29 +22,50 @@ export const listQuerySchema = Type.Object({
   )
 })
 
-/** Plat5 ids, and this API's, are ULIDs in lowercase. */
-const isLowercaseUlid = (id: string): boolean => isValid(id) && id === id.toLowerCase()
-
 /** One request's limit and cursor. An empty `startingAfter` is the first page. */
 export type Page = { limit: number; startingAfter: string }
 
+/** A query parameter's first value, or "" without one. */
+const first = (value: unknown): string => {
+  const v = Array.isArray(value) ? value[0] : value
+  return typeof v === "string" ? v : ""
+}
+
+const INT64_MAX = 2n ** 63n - 1n
+
 /**
- * Reads `limit` and `starting_after`. A limit under 1 or not a whole number, or a cursor
- * that isn't a lowercase ULID, is a 422. A well-formed cursor that isn't in the list is not
- * an error: the walk continues after it in id order.
+ * A whole number in base 10 with an optional sign, as Go's strconv.Atoi reads it, or null
+ * when it isn't one or doesn't fit in 64 bits.
  */
-export const parsePage = (query: {
-  limit?: string
-  starting_after?: string
-}): Page => {
+const atoi = (s: string): number | null => {
+  if (!/^[+-]?\d+$/.test(s)) return null
+  const n = BigInt(s)
+  if (n > INT64_MAX || n < -INT64_MAX - 1n) return null
+  return Number(n)
+}
+
+/**
+ * Reads `limit` and `starting_after` (the first of each), white space trimmed. A limit
+ * under 1 or not a whole number, or a cursor that isn't a lowercase ULID, is a 422; the
+ * limit is checked first. A well-formed cursor that isn't in the list is not an error: the
+ * walk continues after it in id order.
+ */
+export const parsePage = (query: unknown): Page => {
+  const q = (typeof query === "object" && query !== null ? query : {}) as Record<
+    string,
+    unknown
+  >
   let limit = DEFAULT_LIMIT
-  const rawLimit = query.limit?.trim()
-  if (rawLimit) {
-    if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1) throw fieldError("limit")
-    limit = Math.min(Number(rawLimit), MAX_LIMIT)
+  const rawLimit = trimSpace(first(q.limit))
+  if (rawLimit !== "") {
+    const n = atoi(rawLimit)
+    if (n === null || n < 1) throw fieldError("limit")
+    limit = Math.min(n, MAX_LIMIT)
   }
-  const startingAfter = query.starting_after?.trim() ?? ""
-  if (startingAfter && !isLowercaseUlid(startingAfter)) throw fieldError("starting_after")
+  const startingAfter = trimSpace(first(q.starting_after))
+  if (startingAfter !== "" && !isLowercaseUlid(startingAfter)) {
+    throw fieldError("starting_after")
+  }
   return { limit, startingAfter }
 }
 

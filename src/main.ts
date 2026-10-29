@@ -1,19 +1,13 @@
 import "dotenv/config"
-import Fastify from "fastify"
-import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox"
-import swagger from "@fastify/swagger"
-import swaggerUi from "@fastify/swagger-ui"
-import { createServer } from "node:http"
 import { AccessClient } from "./access.js"
+import { buildApp } from "./app.js"
 import { loadConfig } from "./config.js"
 import { connect, migrate, type Db } from "./db.js"
+import { createInternalServer } from "./internal.js"
 import { LifecycleConsumer } from "./lifecycle.js"
-import { collectMetrics, initMetrics, metricsContentType } from "./metrics.js"
-import { registerObservability } from "./middleware/observability.js"
+import { initMetrics } from "./metrics.js"
 import { ProfilesStore } from "./profiles/store.js"
-import { registerProfileRoutes } from "./profiles/routes.js"
 import { TasksStore } from "./tasks/store.js"
-import { registerTaskRoutes } from "./tasks/routes.js"
 import { initTelemetry } from "./telemetry.js"
 
 const config = loadConfig()
@@ -26,53 +20,15 @@ migrate(db)
 const profiles = new ProfilesStore(db)
 const tasks = new TasksStore(db)
 
-const app = Fastify({
-  logger: false,
-  // No CORS: the gateway owns it (plat5 docs/guides/write-a-service.md)
-  trustProxy: true
-}).withTypeProvider<TypeBoxTypeProvider>()
-
-registerObservability(app)
-
-await app.register(swagger, {
-  openapi: {
-    info: {
-      title: "Plat5 API",
-      description: "Reference Node + Fastify business service for Plat5",
-      version: config.serviceVersion
-    }
-  }
-})
-await app.register(swaggerUi, { routePrefix: "/docs" })
-
-registerProfileRoutes(app, profiles)
-registerTaskRoutes(
-  app,
+const app = await buildApp({
   tasks,
-  new AccessClient(config.identityInternalUrl),
-  config.taskAssigneePermission
-)
-
-const internal = createServer(async (req, res) => {
-  const url = req.url?.split("?")[0] ?? "/"
-  if (url === "/health/live" || url === "/health/ready") {
-    res.writeHead(200, { "content-type": "application/json" })
-    res.end(JSON.stringify({ status: "healthy" }))
-    return
-  }
-  if (url === "/metrics") {
-    try {
-      const body = await collectMetrics()
-      res.writeHead(200, { "content-type": metricsContentType() })
-      res.end(body)
-    } catch {
-      res.writeHead(500, { "content-type": "text/plain" })
-      res.end("metrics collection failed")
-    }
-    return
-  }
-  res.writeHead(404).end()
+  profiles,
+  access: new AccessClient(config.identityInternalUrl),
+  assigneePermission: config.taskAssigneePermission,
+  docsVersion: config.serviceVersion
 })
+
+const internal = createInternalServer(db)
 
 const lifecycle = config.identityInternalUrl
   ? new LifecycleConsumer(config.identityInternalUrl, db, tasks, profiles)

@@ -7,6 +7,12 @@ const optionalNonEmpty = (name: string): string | undefined => {
   return trimmed === "" ? undefined : trimmed
 }
 
+/** A variable as set, or undefined when unset or empty (Go's os.Getenv(name) == ""). */
+const optionalSet = (name: string): string | undefined => {
+  const raw = process.env[name]
+  return raw === undefined || raw === "" ? undefined : raw
+}
+
 const optionalExporterList = (name: string): string[] | undefined => {
   const raw = optionalNonEmpty(name)
   if (raw === undefined) return undefined
@@ -86,7 +92,7 @@ export type AppConfig = {
  * it requires, is unset or empty: the API won't start without it.
  */
 export const loadConfig = (): AppConfig => {
-  const taskAssigneePermission = optionalNonEmpty("TASK_ASSIGNEE_PERMISSION")
+  const taskAssigneePermission = optionalSet("TASK_ASSIGNEE_PERMISSION")
   if (taskAssigneePermission === undefined) {
     throw new Error(
       "TASK_ASSIGNEE_PERMISSION is unset or empty: set it to the permission an assignee needs on the task's project (the starter's is project:read)"
@@ -96,8 +102,8 @@ export const loadConfig = (): AppConfig => {
   return {
     port: envInt("PORT", 3000),
     internalPort: envInt("INTERNAL_PORT", 3001),
-    databasePath: optionalNonEmpty("DATABASE_PATH") ?? "./data/app.db",
-    identityInternalUrl: optionalNonEmpty("IDENTITY_INTERNAL_URL"),
+    databasePath: optionalSet("DATABASE_PATH") ?? "./data/app.db",
+    identityInternalUrl: optionalSet("IDENTITY_INTERNAL_URL"),
     taskAssigneePermission,
     serviceName: optionalNonEmpty("OTEL_SERVICE_NAME") ?? "api",
     serviceNamespace: optionalNonEmpty("OTEL_SERVICE_NAMESPACE") ?? "api",

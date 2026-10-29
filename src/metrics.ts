@@ -2,7 +2,7 @@ import { metrics, type Counter, type Histogram } from "@opentelemetry/api"
 import client from "prom-client"
 
 const dbSystemName = "sqlite"
-const dbNamespace = "app"
+const dbNamespace = "api"
 
 const HTTP_DURATION_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]
 const DB_DURATION_BUCKETS = [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1]
@@ -11,14 +11,14 @@ let initialized = false
 
 const httpDuration = new client.Histogram({
   name: "http_request_duration_seconds",
-  help: "HTTP request duration in seconds",
+  help: "HTTP request latency observed by the api service",
   labelNames: ["method", "route"] as const,
   buckets: HTTP_DURATION_BUCKETS
 })
 
 const httpTotal = new client.Counter({
   name: "http_requests_total",
-  help: "Total HTTP requests processed",
+  help: "Total HTTP requests handled by the api service",
   labelNames: ["method", "route", "status"] as const
 })
 

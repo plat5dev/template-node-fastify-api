@@ -1,5 +1,8 @@
 import type { FastifyPluginAsyncTypebox } from "@fastify/type-provider-typebox"
 import * as audit from "../audit.js"
+import { charLength, optionalString, readBody } from "../body.js"
+import { now } from "../clock.js"
+import { fieldError } from "../errors.js"
 import {
   profileParamsSchema,
   profileSchema,
@@ -9,7 +12,8 @@ import {
 import type { App } from "../types.js"
 import type { ProfilesStore } from "./store.js"
 
-const now = () => new Date().toISOString()
+/** A bio's longest, in characters (Unicode code points). */
+const MAX_BIO = 2000
 
 export const registerProfileRoutes = (app: App, store: ProfilesStore): void => {
   const plugin: FastifyPluginAsyncTypebox = async (scope) => {
@@ -49,8 +53,11 @@ export const registerProfileRoutes = (app: App, store: ProfilesStore): void => {
         }
       },
       async (req, reply) => {
-        const { bio } = req.body
         const { user_id } = req.params
+        // Not trimmed, and "" is a bio.
+        const bio = optionalString(readBody(req, ["bio"]), "bio")
+        if (bio === undefined) throw fieldError("bio", "Bio is required.")
+        if (charLength(bio) > MAX_BIO) throw fieldError("bio", "Bio is too long.")
         const ts = now()
         const existing = store.findByUserId(user_id)
         if (existing) {

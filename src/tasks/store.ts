@@ -48,22 +48,29 @@ export class TasksStore {
     })
   }
 
-  update(t: Task): void {
-    trackDb("tasks.update", () => {
-      this.db
+  /**
+   * Writes `t`'s fields to the task with its id in its environment, and says whether there
+   * was one: false when it's gone, such as deleted since it was read.
+   */
+  update(t: Task): boolean {
+    return trackDb("tasks.update", () => {
+      const { changes } = this.db
         .prepare(
           `UPDATE tasks SET title = ?, status = ?, assignee_id = ?, updated_at = ?
            WHERE id = ? AND environment_id = ?`
         )
         .run(t.title, t.status, t.assignee_id, t.updated_at, t.id, t.environment_id)
+      return changes > 0
     })
   }
 
-  delete(environmentId: string, taskId: string): void {
-    trackDb("tasks.delete", () => {
-      this.db
+  /** Deletes the task with `taskId` in the environment, and says whether there was one. */
+  delete(environmentId: string, taskId: string): boolean {
+    return trackDb("tasks.delete", () => {
+      const { changes } = this.db
         .prepare(`DELETE FROM tasks WHERE id = ? AND environment_id = ?`)
         .run(taskId, environmentId)
+      return changes > 0
     })
   }
 

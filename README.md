@@ -10,7 +10,7 @@ Plat5 decides who may call what, at its gateway. This service owns business logi
 |-------|--------|
 | Runtime / installs | Node 22+ / pnpm |
 | HTTP | Fastify 5 |
-| Schema | TypeBox (+ `@fastify/swagger` OpenAPI at `/docs`) |
+| Schema | TypeBox, describing the API for `@fastify/swagger`'s OpenAPI at `/docs`; bodies are checked by hand (`src/body.ts`), so every answer is the API's own |
 | DB | SQLite via `better-sqlite3` |
 | Dev | `tsx watch` |
 | Prod | `tsc` → `node dist/main.js` |
@@ -260,9 +260,13 @@ Health and `/metrics` are on the internal server (not OTel-instrumented).
 ```
 src/
   main.ts              # dual listen: public + internal; starts the feeds' reader
+  app.ts               # the public API: Fastify, raw bodies, routes
+  internal.ts          # the internal port: health, /metrics
   config.ts            # env → AppConfig
   db.ts                # better-sqlite3 open + schema
   errors.ts            # Plat5 error envelope
+  body.ts              # a JSON request body, or a 422 at body
+  clock.ts             # timestamps, RFC 3339 UTC
   audit.ts             # X-Plat5-Audit-Details / -Created
   pagination.ts        # limit, starting_after, has_more
   lifecycle.ts         # identity's tree and user feeds: purged environments, deleted accounts
@@ -270,7 +274,7 @@ src/
   metrics.ts           # prom-client scrape + HTTP/DB metrics
   telemetry.ts         # OTel SDK (exporter matrix)
   middleware/          # access log, spans, error handler
-  schemas/             # TypeBox models
+  schemas/             # TypeBox models, for the OpenAPI (routes validate by hand)
   profiles/ tasks/     # the API: routes + store
   *.test.ts            # tests, beside what they test
 plat5.yml services/    # the deployment's config

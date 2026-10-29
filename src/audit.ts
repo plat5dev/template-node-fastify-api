@@ -9,7 +9,9 @@
  * Changes are `{ from, to }` for the fields that changed. A create names what it made.
  * A delete sends nothing: the route and its path say what happened. Never a secret.
  */
+import { trace } from "@opentelemetry/api"
 import type { FastifyReply } from "fastify"
+import { traceContextOf } from "./middleware/observability.js"
 
 export const DETAILS_HEADER = "X-Plat5-Audit-Details"
 export const CREATED_HEADER = "X-Plat5-Audit-Created"
@@ -30,12 +32,15 @@ export const changed = (
 }
 
 /**
- * `details` as one JSON object of visible ASCII, or null over the cap. Non-ASCII is
- * escaped as \u, which is still the same JSON.
+ * `details` as one JSON object of visible ASCII, or null over the cap. Keys are sorted;
+ * `<`, `>` and `&` and all non-ASCII are escaped as \u (astral characters as surrogate
+ * pairs), which is still the same JSON.
  */
 export const encode = (details: Details): string | null => {
-  const json = JSON.stringify(details).replace(
-    /[^\x20-\x7e]/g,
+  const sorted: Details = {}
+  for (const key of Object.keys(details).sort()) sorted[key] = details[key]
+  const json = JSON.stringify(sorted).replace(
+    /[^\x20-\x7e]|[<>&]/g,
     (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`
   )
   return json.length > MAX_BYTES ? null : json
@@ -43,22 +48,16 @@ export const encode = (details: Details): string | null => {
 
 /**
  * Puts `details` on the response. Empty sets nothing, so a write that changed nothing
- * sends no header. Over the cap sets nothing and logs a warning: the event still records
- * the request, just not the change.
+ * sends no header. Over the cap sets nothing and notes it on the trace: the event still
+ * records the request, just not the change.
  */
 export const setDetails = (reply: FastifyReply, details: Details): void => {
   if (Object.keys(details).length === 0) return
   const value = encode(details)
   if (value === null) {
-    console.log(
-      JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: "warn",
-        message: "audit details not sent",
-        reason: `over ${MAX_BYTES} bytes`,
-        request_id: reply.request.headers["x-request-id"] ?? null
-      })
-    )
+    trace.getSpan(traceContextOf(reply.request))?.addEvent("audit details not sent", {
+      reason: `audit details are over ${MAX_BYTES} bytes`
+    })
     return
   }
   reply.header(DETAILS_HEADER, value)
