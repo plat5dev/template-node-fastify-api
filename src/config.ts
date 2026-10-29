@@ -89,13 +89,16 @@ export type AppConfig = {
 
 /**
  * Reads the config from the environment. Throws when `TASK_ASSIGNEE_PERMISSION`, the one
- * it requires, is unset or empty: the API won't start without it.
+ * it requires, is unset or isn't a permission name: the API won't start without it.
  */
+/** A permission's name as Plat5's roles write it. */
+const PERMISSION_NAME = /^[a-z0-9:._-]{1,64}$/
+
 export const loadConfig = (): AppConfig => {
   const taskAssigneePermission = optionalSet("TASK_ASSIGNEE_PERMISSION")
-  if (taskAssigneePermission === undefined) {
+  if (taskAssigneePermission === undefined || !PERMISSION_NAME.test(taskAssigneePermission)) {
     throw new Error(
-      "TASK_ASSIGNEE_PERMISSION is unset or empty: set it to the permission an assignee needs on the task's project (the starter's is project:read)"
+      "TASK_ASSIGNEE_PERMISSION is unset or isn't a permission name ([a-z0-9:._-], at most 64 characters): set it to the permission an assignee needs on the task's project (the starter's is project:read)"
     )
   }
   const deploymentEnvOtel = optionalNonEmpty("OTEL_DEPLOYMENT_ENV")
