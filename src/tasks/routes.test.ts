@@ -632,12 +632,38 @@ test("a field of the wrong JSON type is a 422 at body, never coerced", async (t)
   }
 })
 
-test("keys match their fields ignoring case, as Go's decoder", async (t) => {
-  const { send } = await newApp(t)
-  const res = await send("POST", tasksPath, `{"TITLE":"Launch","Status":"done","other":1}`)
-  assert.equal(res.statusCode, 201)
-  assert.equal(res.json<Task>().title, "Launch")
-  assert.equal(res.json<Task>().status, "done")
+test("keys match exactly: an unknown field is a 422 naming each, before anything else", async (t) => {
+  const { send, create, get, list, identity } = await newApp(t)
+  const task = await create(environment, "Launch")
+  for (const [method, url, body, paths] of [
+    ["POST", tasksPath, `{"Title":"x"}`, ["Title"]],
+    ["POST", tasksPath, `{"title":"x","priority":1}`, ["priority"]],
+    ["POST", tasksPath, `{"Status":"done","title":"","Assignee_ID":"${assignee}"}`, ["Status", "Assignee_ID"]],
+    ["POST", tasksPath, `{"x":1,"title":"x","y":2,"x":3}`, ["x", "y"]],
+    ["POST", tasksPath, `{"b":1,"title":"x","1":2}`, ["b", "1"]],
+    ["PATCH", `${tasksPath}/${task.id}`, `{"Title":"x"}`, ["Title"]],
+    // A missing task: the body first.
+    ["PATCH", `${tasksPath}/01jd8x3k7q00000000000000zz`, `{"title":"x","extra":{"a":1}}`, ["extra"]]
+  ] as const) {
+    const res = await send(method, url, body)
+    const label = `${method} ${body}`
+    assert.equal(res.statusCode, 422, label)
+    const { error } = res.json<ErrorBody>()
+    assert.equal(error.code, "VALIDATION_ERROR", label)
+    assert.equal(error.message, `${paths[0]} isn't a field.`, label)
+    assert.deepEqual(
+      error.details.fields,
+      paths.map((path) => ({ path, message: `${path} isn't a field.` })),
+      label
+    )
+  }
+  assert.equal((await list()).tasks.length, 1)
+  const got = await get(task.id)
+  assert.equal(got.title, "Launch")
+  assert.equal(got.updated_at, task.updated_at, "a refused PATCH wrote")
+  assert.deepEqual(identity.asked, [])
+  const res = await send("PATCH", `${tasksPath}/${task.id}`, `{"title":"Ship","status":"done","assignee_id":null}`)
+  assert.equal(res.statusCode, 200)
 })
 
 test("PATCH and DELETE answer 404 when the scoped write finds no row", async (t) => {
@@ -685,7 +711,7 @@ test("a body over 1 MiB is a 413 before anything else, on any route", async (t) 
     })
   }
   // Exactly 1 MiB is read.
-  const fits = `{"title":"a","pad":"${"x".repeat((1 << 20) - 22)}"}`
+  const fits = `{"title":"a"${" ".repeat((1 << 20) - 13)}}`
   assert.equal(Buffer.byteLength(fits), 1 << 20)
   assert.equal((await send("POST", tasksPath, fits)).statusCode, 201)
 })

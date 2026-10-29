@@ -52,7 +52,7 @@ const MAX_TITLE = 255
 
 const STATUSES: readonly string[] = ["todo", "in_progress", "done"]
 
-/** The body's fields, by the names Go's decoder matches. */
+/** The body's fields: a key that isn't one of these, exactly, is a 422. */
 const FIELDS = ["title", "status", "assignee_id"] as const
 
 /** A title, trimmed: required, and at most MAX_TITLE characters. */

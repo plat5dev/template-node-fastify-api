@@ -96,6 +96,33 @@ test("PUT: a body not sent as JSON, or not of the right shape, is a 422 at body"
   assert.equal(res.json<Profile>().bio, "")
 })
 
+test("PUT: keys match exactly: an unknown field is a 422 naming each", async (t) => {
+  const { put, app } = await newApp(t)
+  for (const [body, paths] of [
+    [`{"Bio":"hi"}`, ["Bio"]],
+    [`{"bio":"hi","name":"x"}`, ["name"]],
+    // Before any value: the type and the length are checked once the keys are right.
+    [`{"BIO":5,"bio":${JSON.stringify("x".repeat(2001))}}`, ["BIO"]]
+  ] as const) {
+    const res = await put(body)
+    assert.equal(res.statusCode, 422, body)
+    const { error } = res.json<{
+      error: { code: string; message: string; details: { fields: unknown } }
+    }>()
+    assert.equal(error.code, "VALIDATION_ERROR", body)
+    assert.equal(error.message, `${paths[0]} isn't a field.`, body)
+    assert.deepEqual(
+      error.details.fields,
+      paths.map((path) => ({ path, message: `${path} isn't a field.` })),
+      body
+    )
+  }
+  // Nothing written.
+  const res = await app.inject({ method: "GET", url: path })
+  assert.equal(res.json<Profile>().bio, "")
+  assert.equal((await put(`{"bio":"hi"}`)).statusCode, 200)
+})
+
 test("PUT: audit details", async (t) => {
   const { put } = await newApp(t)
   let res = await put(`{"bio":"é"}`)
@@ -103,6 +130,6 @@ test("PUT: audit details", async (t) => {
   assert.equal(details(res), `{"bio":{"from":null,"to":"\\u00e9"}}`)
   res = await put(`{"bio":"é"}`)
   assert.equal(details(res), undefined, "unchanged")
-  res = await put(`{"Bio":"new"}`)
+  res = await put(`{"bio":"new"}`)
   assert.equal(details(res), `{"bio":{"from":"\\u00e9","to":"new"}}`)
 })
