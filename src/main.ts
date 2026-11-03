@@ -33,6 +33,9 @@ const internal = createInternalServer(db)
 const lifecycle = config.identityInternalUrl
   ? new LifecycleConsumer(config.identityInternalUrl, db, tasks, profiles)
   : undefined
+// SIGINT or SIGTERM aborts it: the lifecycle reader stops, its read in flight cancelled.
+const stopping = new AbortController()
+let following: Promise<void> = Promise.resolve()
 
 const shutdown = async (signal: string) => {
   console.log(
@@ -43,9 +46,11 @@ const shutdown = async (signal: string) => {
       signal
     })
   )
-  lifecycle?.stop()
+  stopping.abort()
   await app.close()
   await new Promise<void>((resolve) => internal.close(() => resolve()))
+  // Wait for the reader, so its last transaction ends before the database closes.
+  await following
   db.close()
   await telemetry.shutdown()
   process.exit(0)
@@ -71,14 +76,14 @@ console.log(
 )
 
 if (lifecycle) {
-  lifecycle.start()
+  following = lifecycle.run(stopping.signal)
 } else {
   console.log(
     JSON.stringify({
       timestamp: new Date().toISOString(),
       level: "warn",
       message:
-        "IDENTITY_INTERNAL_URL is unset: not reading identity's feeds, so a purged environment's tasks and a deleted person's profile are kept, and a task's assignee can't be checked (503)"
+        "IDENTITY_INTERNAL_URL is unset: not reading identity's lifecycle log, so a purged environment's tasks and a deleted person's profile are kept, and a task's assignee can't be checked (503)"
     })
   )
 }

@@ -62,8 +62,8 @@ export type AppConfig = {
   readonly internalPort: number
   readonly databasePath: string
   /**
-   * Identity's internal base URL, for its tree and user feeds and the assignee check.
-   * Unset: the feeds aren't read, and a task with an assignee is a 503.
+   * Identity's internal base URL, for its lifecycle log and the assignee check.
+   * Unset: the log isn't read, and a task with an assignee is a 503.
    */
   readonly identityInternalUrl: string | undefined
   /**
