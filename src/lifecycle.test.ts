@@ -19,11 +19,13 @@ type Served = Partial<Event> & { id: string; type: string }
 /**
  * Identity, serving the one lifecycle log at /internal/events as identity does: types
  * filters, two events to a page, no after is answered at once, and with after it waits for
- * a matching event up to `wait`, then answers 204. The first `fail` requests answer 500.
+ * a matching event up to `wait`, then answers 204. The first requests answer `fail`'s
+ * statuses, one each.
  */
 class Identity {
   wait = 50
-  fail = 0
+  /** Statuses for the first requests. */
+  fail: number[] = []
   /** Each request's after, types and limit. */
   readonly asked: string[] = []
   readonly types: string[] = []
@@ -62,10 +64,8 @@ class Identity {
       this.asked.push(after)
       this.types.push(url.searchParams.get("types") ?? "")
       this.limits.push(url.searchParams.get("limit") ?? "")
-      if (this.fail > 0) {
-        this.fail--
-        return res.writeHead(500).end()
-      }
+      const failure = this.fail.shift()
+      if (failure !== undefined) return res.writeHead(failure).end()
       let page = this.page(after, types)
       const deadline = performance.now() + this.wait
       while (after !== "" && page.events.length === 0) {
@@ -250,14 +250,15 @@ test("a waiting read gets a new event", async (t) => {
 
 test("an error is retried", async (t) => {
   const identity = theLog()
-  identity.fail = 2
+  // Identity's Postgres unavailable is a 503; any other failure, a 500.
+  identity.fail = [503, 500]
   const s = await setup(t, identity)
   s.seed()
 
-  await assert.rejects(s.consumer.step(), /answered 500/)
+  await assert.rejects(s.consumer.step(), /answered 503/)
   assert.equal(s.cursor(), "", "a failed read moved the cursor")
 
-  // run logs the next 500, waits its retry, and reads on.
+  // run logs the 500, waits its retry, and reads on.
   await s.runUntil(() => s.cursor() === "13")
   s.checkActed()
   assert.deepEqual(identity.asked.slice(0, 4), ["", "", "", "12"])
