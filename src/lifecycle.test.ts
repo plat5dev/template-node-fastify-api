@@ -112,10 +112,10 @@ const setup = async (t: TestContext, identity: Identity, retryMs = 10) => {
   const profiles = new ProfilesStore(db)
   const consumer = new LifecycleConsumer(identity.url, db, tasks, profiles, retryMs)
 
-  const addTask = (id: string, environmentId: string) =>
+  const addTask = (id: string, projectId: string) =>
     tasks.insert({
       id,
-      environment_id: environmentId,
+      project_id: projectId,
       title: "t",
       status: "todo",
       assignee_id: null,
@@ -123,8 +123,8 @@ const setup = async (t: TestContext, identity: Identity, retryMs = 10) => {
       created_at: "now",
       updated_at: "now"
     })
-  const count = (environmentId: string) =>
-    tasks.listByEnvironment(environmentId, { limit: 100, startingAfter: "" }).items.length
+  const count = (projectId: string) =>
+    tasks.listByProject(projectId, { limit: 100, startingAfter: "" }).items.length
   const addProfile = (userId: string) =>
     profiles.insert({ user_id: userId, bio: "hi", created_at: "now", updated_at: "now" })
   const hasProfile = (userId: string) => profiles.findByUserId(userId) !== null
@@ -144,8 +144,8 @@ const setup = async (t: TestContext, identity: Identity, retryMs = 10) => {
     addProfile(stays)
   }
   const checkActed = () => {
-    assert.equal(count(purged), 0, "purged environment's tasks are kept")
-    assert.equal(count(kept), 1, "other environment's tasks are gone")
+    assert.equal(count(purged), 0, "purged project's tasks are kept")
+    assert.equal(count(kept), 1, "other project's tasks are gone")
     assert.equal(hasProfile(gone), false, "deleted person's profile is kept")
     assert.equal(hasProfile(stays), true, "another person's profile is gone")
     assert.equal(hasProfile(fresh), false, "user.created made a profile")
@@ -190,13 +190,13 @@ const returnsWithin = async (done: Promise<void>, ms: number) => {
 
 const theLog = () =>
   new Identity([
-    { id: "7", type: "node.created", kind: "environment", node_id: purged },
+    { id: "7", type: "node.created", kind: "project", node_id: purged },
     { id: "8", type: "user.created", user_id: fresh },
     { id: "9", type: "node.purged", kind: "organization", node_id: kept },
     { id: "10", type: "member.removed" },
-    { id: "12", type: "node.purged", kind: "environment", node_id: purged },
+    { id: "12", type: "node.purged", kind: "project", node_id: purged },
     { id: "13", type: "user.deleted", user_id: gone },
-    { id: "20", type: "node.deleted", kind: "environment", node_id: kept }
+    { id: "20", type: "node.deleted", kind: "project", node_id: kept }
   ])
 
 test("acts on each page and advances the cursor", async (t) => {

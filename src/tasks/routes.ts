@@ -16,7 +16,7 @@ import { fieldError, invalidRequest, notFound, serviceUnavailable } from "../err
 import { headerOf, requestIdOf, traceContextOf } from "../middleware/observability.js"
 import { listQuerySchema, parsePage } from "../pagination.js"
 import {
-  environmentParamsSchema,
+  projectParamsSchema,
   errorSchema,
   taskCreateSchema,
   taskListSchema,
@@ -29,16 +29,10 @@ import type { App } from "../types.js"
 import type { TasksStore } from "./store.js"
 
 /**
- * The caller's member id in the environment's tree, from the front door. A create records
+ * The caller's member id in the project's tree, from the front door. A create records
  * it as the task's author, and answers 400 without it.
  */
 export const MEMBER_HEADER = "x-plat5-member-id"
-
-/**
- * The environment's project id, from the front door. A write that sets an assignee checks
- * them on it, and answers 400 without it.
- */
-export const PROJECT_HEADER = "x-plat5-project-id"
 
 /** A header the API requires of the front door: a 400 without it. */
 const requiredHeader = (req: FastifyRequest, name: string): string => {
@@ -83,10 +77,10 @@ const parseAssignee = (fields: Fields): string | null | undefined => {
 // Monotonic, so tasks made in the same millisecond still list in the order they were made.
 const ulid = monotonicFactory()
 
-// Every route scopes its lookups by the environment id in the path, and checks nothing
-// about the caller or the environment: the front door decided who may call, on which
-// environment. A write that sets an assignee checks the assignee, in this order: the body,
-// the task (on an update), the project header, then identity's answer, before writing.
+// Every route scopes its lookups by the project id in the path, and checks nothing
+// about the caller or the project: the front door decided who may call, on which
+// project. A write that sets an assignee checks the assignee, in this order: the body,
+// the task (on an update), then identity's answer, before writing.
 export const registerTaskRoutes = (
   app: App,
   store: TasksStore,
@@ -94,14 +88,16 @@ export const registerTaskRoutes = (
   assigneePermission: string
 ): void => {
   /**
-   * Asks identity whether the assignee holds `assigneePermission` on the environment's
-   * project. The caller may assign, but the assignee isn't the caller, so the front door
-   * decided nothing about them
-   * (plat5 docs/guides/write-a-service.md#checking-access-outside-a-request). No answer is
+   * Asks identity whether the assignee holds `assigneePermission` on the project. The
+   * caller may assign, but the assignee isn't the caller, so the front door decided nothing
+   * about them (plat5 docs/guides/write-a-service.md#checking-access-outside-a-request). No answer is
    * no: a 503, so nothing is written.
    */
-  const checkAssignee = async (req: FastifyRequest, assigneeId: string): Promise<void> => {
-    const projectId = requiredHeader(req, PROJECT_HEADER)
+  const checkAssignee = async (
+    req: FastifyRequest,
+    projectId: string,
+    assigneeId: string
+  ): Promise<void> => {
     const allowed = await access
       .evaluate(traceContextOf(req), requestIdOf(req) ?? "", {
         memberId: assigneeId,
@@ -116,15 +112,15 @@ export const registerTaskRoutes = (
   }
 
   const plugin: FastifyPluginAsyncTypebox = async (scope) => {
-    // An environment is a Plat5 node: its id is in the path, from the front door.
-    const base = "/environments/:environment_id/tasks"
+    // A project is a Plat5 node: its id is in the path, from the front door.
+    const base = "/projects/:project_id/tasks"
 
     scope.get(
       base,
       {
         schema: {
           tags: ["Tasks"],
-          params: environmentParamsSchema,
+          params: projectParamsSchema,
           querystring: listQuerySchema,
           response: {
             200: taskListSchema
@@ -132,9 +128,9 @@ export const registerTaskRoutes = (
         }
       },
       async (req) => {
-        const { environment_id } = req.params
+        const { project_id } = req.params
         const page = parsePage(req.query)
-        const { items, hasMore } = store.listByEnvironment(environment_id, page)
+        const { items, hasMore } = store.listByProject(project_id, page)
         return { tasks: items, has_more: hasMore }
       }
     )
@@ -144,20 +140,18 @@ export const registerTaskRoutes = (
       {
         schema: {
           tags: ["Tasks"],
-          params: environmentParamsSchema,
+          params: projectParamsSchema,
           body: taskCreateSchema,
           response: {
             201: taskSchema,
-            400: errorSchema(
-              "No X-Plat5-Member-Id, or an assignee and no X-Plat5-Project-Id."
-            ),
+            400: errorSchema("No X-Plat5-Member-Id."),
             422: errorSchema("A field isn't right, or the assignee can't see the project."),
             503: errorSchema("Identity gave no answer about the assignee. Nothing written.")
           }
         }
       },
       async (req, reply) => {
-        const { environment_id } = req.params
+        const { project_id } = req.params
         // The author before the body: a create without one is a 400, whatever it sends.
         const memberId = requiredHeader(req, MEMBER_HEADER)
         const fields = readBody(req, FIELDS)
@@ -170,11 +164,11 @@ export const registerTaskRoutes = (
           status = rawStatus
         }
         const assigneeId = parseAssignee(fields) ?? null
-        if (assigneeId !== null) await checkAssignee(req, assigneeId)
+        if (assigneeId !== null) await checkAssignee(req, project_id, assigneeId)
         const ts = now()
         const task: Task = {
           id: ulid().toLowerCase(),
-          environment_id,
+          project_id,
           title,
           status: status as Task["status"],
           assignee_id: assigneeId,
@@ -204,8 +198,8 @@ export const registerTaskRoutes = (
         }
       },
       async (req) => {
-        const { environment_id, task_id } = req.params
-        const task = store.findInEnvironment(environment_id, task_id)
+        const { project_id, task_id } = req.params
+        const task = store.findInProject(project_id, task_id)
         if (!task) throw notFound("task", task_id)
         return task
       }
@@ -220,15 +214,14 @@ export const registerTaskRoutes = (
           body: taskUpdateSchema,
           response: {
             200: taskSchema,
-            400: errorSchema("An assignee and no X-Plat5-Project-Id."),
-            404: errorSchema("No such task in the environment."),
+            404: errorSchema("No such task in the project."),
             422: errorSchema("A field isn't right, or the assignee can't see the project."),
             503: errorSchema("Identity gave no answer about the assignee. Nothing written.")
           }
         }
       },
       async (req, reply) => {
-        const { environment_id, task_id } = req.params
+        const { project_id, task_id } = req.params
         const fields = readBody(req, FIELDS)
         const rawTitle = optionalString(fields, "title")
         const status = optionalString(fields, "status")
@@ -236,9 +229,9 @@ export const registerTaskRoutes = (
         if (status !== undefined) checkStatus(status)
         // Absent leaves the assignee as it is, and null unassigns: nothing to check.
         const assigneeId = parseAssignee(fields)
-        const existing = store.findInEnvironment(environment_id, task_id)
+        const existing = store.findInProject(project_id, task_id)
         if (!existing) throw notFound("task", task_id)
-        if (typeof assigneeId === "string") await checkAssignee(req, assigneeId)
+        if (typeof assigneeId === "string") await checkAssignee(req, project_id, assigneeId)
         const updated: Task = {
           ...existing,
           title: title ?? existing.title,
@@ -266,11 +259,11 @@ export const registerTaskRoutes = (
         }
       },
       async (req, reply) => {
-        const { environment_id, task_id } = req.params
-        const existing = store.findInEnvironment(environment_id, task_id)
+        const { project_id, task_id } = req.params
+        const existing = store.findInProject(project_id, task_id)
         if (!existing) throw notFound("task", task_id)
         // Deleted since the read: the same 404 the read would answer now.
-        if (!store.delete(environment_id, task_id)) throw notFound("task", task_id)
+        if (!store.delete(project_id, task_id)) throw notFound("task", task_id)
         // The body is never read. No audit details: the route and the task id in its path say what happened.
         return reply.status(204).send()
       }

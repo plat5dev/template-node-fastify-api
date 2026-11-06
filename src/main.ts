@@ -83,7 +83,7 @@ if (lifecycle) {
       timestamp: new Date().toISOString(),
       level: "warn",
       message:
-        "IDENTITY_INTERNAL_URL is unset: not reading identity's lifecycle log, so a purged environment's tasks and a deleted person's profile are kept, and a task's assignee can't be checked (503)"
+        "IDENTITY_INTERNAL_URL is unset: not reading identity's lifecycle log, so a purged project's tasks and a deleted person's profile are kept, and a task's assignee can't be checked (503)"
     })
   )
 }

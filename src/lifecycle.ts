@@ -1,10 +1,10 @@
 /**
- * Follows identity's lifecycle log, so the API's data goes when its environment or its
+ * Follows identity's lifecycle log, so the API's data goes when its project or its
  * person does (plat5 docs/concepts/lifecycle.md#following-the-log).
  *
- * It asks only for the two events it acts on. `node.purged` for an environment deletes that
- * environment's tasks; a purged project's environments are purged with it, each with its
- * own event. `user.deleted` deletes that person's profile. Tasks are authored, so
+ * It asks only for the two events it acts on. `node.purged` for a project deletes that
+ * project's tasks; a purged organization's projects are purged with it, each with its own
+ * event. `user.deleted` deletes that person's profile. Tasks are authored, so
  * `member.removed` keeps them. One cursor, the last event id acted on, is kept in SQLite
  * with the data it cleans up, and saved in the same transaction as a page's deletes. Acting
  * again on the same event changes nothing, so the log can be replayed by resetting it.
@@ -170,9 +170,9 @@ export class LifecycleConsumer {
   }
 
   private act(event: Event): void {
-    if (event.type === "node.purged" && event.kind === "environment") {
-      this.tasks.deleteByEnvironment(event.node_id)
-      log("info", "purged environment's tasks deleted", {
+    if (event.type === "node.purged" && event.kind === "project") {
+      this.tasks.deleteByProject(event.node_id)
+      log("info", "purged project's tasks deleted", {
         event_id: event.id,
         node_id: event.node_id
       })

@@ -34,7 +34,7 @@ export const taskStatusSchema = Type.Union([
 // the same tree, or null.
 export const taskSchema = Type.Object({
   id: Type.String(),
-  environment_id: Type.String(),
+  project_id: Type.String(),
   title: Type.String(),
   status: taskStatusSchema,
   assignee_id: nullableString(),
@@ -46,7 +46,7 @@ export const taskSchema = Type.Object({
 const assigneeIdSchema = nullableString({
   pattern: LOWERCASE_ULID,
   description:
-    "A member id in the environment's tree who can see its project, or null for none."
+    "A member id in the project's tree who can see the project, or null for none."
 })
 
 export const taskCreateSchema = Type.Object({
@@ -64,10 +64,10 @@ export const taskUpdateSchema = Type.Object({
 
 export const profileParamsSchema = Type.Object({ user_id: Type.String() })
 
-export const environmentParamsSchema = Type.Object({ environment_id: Type.String() })
+export const projectParamsSchema = Type.Object({ project_id: Type.String() })
 
 export const taskParamsSchema = Type.Object({
-  environment_id: Type.String(),
+  project_id: Type.String(),
   task_id: Type.String()
 })
 
