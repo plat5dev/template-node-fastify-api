@@ -25,7 +25,7 @@ const app = await buildApp({
   profiles,
   access: new AccessClient(config.identityInternalUrl),
   assigneePermission: config.taskAssigneePermission,
-  docsVersion: config.serviceVersion
+  docsVersion: config.resource["service.version"]
 })
 
 const internal = createInternalServer(db)

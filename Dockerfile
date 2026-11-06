@@ -41,6 +41,9 @@ COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY . .
+# The release this image reports as service.version; dev without one.
+ARG VERSION=dev
+RUN node -e 'require("node:fs").writeFileSync("src/version.ts", `export const VERSION = ${JSON.stringify(process.env.VERSION)}\n`)'
 RUN pnpm run build && pnpm prune --prod
 
 # ======================================================================

@@ -21,6 +21,7 @@ import {
 } from "../errors.js"
 import { observeRequest } from "../metrics.js"
 import type { App } from "../types.js"
+import { redactQuery } from "./redact.js"
 
 const REQUEST_ID_HEADER = "x-request-id"
 
@@ -81,7 +82,15 @@ export const traceContextOf = (req: FastifyRequest): Context => {
   return span ? trace.setSpan(context.active(), span) : context.active()
 }
 
-const pathOf = (url: string): string => url.split("?")[0] ?? url
+/** A request URL's path and its query, without the `?`: "" without one. */
+const splitUrl = (url: string): { path: string; query: string } => {
+  const at = url.indexOf("?")
+  return at >= 0 ? { path: url.slice(0, at), query: url.slice(at + 1) } : { path: url, query: "" }
+}
+
+/** The scheme of the request this server received: its connection's, never a header's. */
+const schemeOf = (req: FastifyRequest): string =>
+  (req.raw.socket as { encrypted?: boolean }).encrypted ? "https" : "http"
 
 const stampTrace = (line: Record<string, unknown>, span: Span | undefined): void => {
   if (!span) return
@@ -91,10 +100,14 @@ const stampTrace = (line: Record<string, unknown>, span: Span | undefined): void
   line.span_id = sc.spanId
 }
 
-const applyHttpStatus = (span: Span, status: number, errorKind: string): void => {
+/**
+ * The span's status from the response (plat5 docs/reference/telemetry.md#http-server-spans):
+ * `Error` with no description and `error.type` on a 5xx, unset otherwise.
+ */
+const applyHttpStatus = (span: Span, status: number, errorType: string): void => {
   span.setAttribute("http.response.status_code", status)
   if (status < 500) return
-  span.setAttribute("error.kind", errorKind)
+  span.setAttribute("error.type", errorType)
   span.setStatus({ code: SpanStatusCode.ERROR })
 }
 
@@ -146,7 +159,7 @@ export const registerObservability = (app: App): void => {
     }
     const parentCtx = propagation.extract(context.active(), carrier)
     const tracer = trace.getTracer("api")
-    const path = pathOf(req.url)
+    const { path, query } = splitUrl(req.url)
     const template = req.routeOptions.url
     const spanName = template ? `${req.method} ${template}` : req.method
     const span = tracer.startSpan(
@@ -155,7 +168,9 @@ export const registerObservability = (app: App): void => {
         kind: SpanKind.SERVER,
         attributes: {
           "http.request.method": req.method,
-          "url.path": path
+          "url.path": path,
+          "url.scheme": schemeOf(req),
+          ...(query !== "" ? { "url.query": redactQuery(query) } : {})
         }
       },
       parentCtx
@@ -191,7 +206,7 @@ export const registerObservability = (app: App): void => {
 
     const ids = callerIds(req)
     const err = s?.error
-    const errorKind = err?.kind ?? "internal"
+    const errorType = err?.kind ?? "internal"
 
     if (s?.span) {
       if (template) {
@@ -199,7 +214,7 @@ export const registerObservability = (app: App): void => {
         s.span.setAttribute("http.route", template)
       }
       for (const [field, value] of ids) s.span.setAttribute(`plat5.${field}`, value)
-      applyHttpStatus(s.span, status, errorKind)
+      applyHttpStatus(s.span, status, errorType)
       s.span.end()
     }
 
@@ -216,7 +231,7 @@ export const registerObservability = (app: App): void => {
     if (requestId) line.request_id = requestId
     for (const [field, value] of ids) line[field] = value
     if (status >= 500) {
-      line.error_kind = errorKind
+      line.error_type = errorType
       line.error_message = err ? `${err.code}: ${err.message}` : "request failed"
     }
     stampTrace(line, s?.span)

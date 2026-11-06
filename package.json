@@ -22,7 +22,6 @@
     "@opentelemetry/resources": "^2.0.0",
     "@opentelemetry/sdk-metrics": "^2.0.0",
     "@opentelemetry/sdk-trace-base": "^2.0.0",
-    "@opentelemetry/semantic-conventions": "^1.33.0",
     "@sinclair/typebox": "^0.34.0",
     "better-sqlite3": "^11.10.0",
     "dotenv": "^17.4.2",

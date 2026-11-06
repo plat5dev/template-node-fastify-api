@@ -1,4 +1,4 @@
-import { diag, DiagLogLevel, metrics, propagation, trace } from "@opentelemetry/api"
+import { diag, type DiagLogger, DiagLogLevel, metrics, propagation, trace } from "@opentelemetry/api"
 import { W3CTraceContextPropagator } from "@opentelemetry/core"
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http"
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
@@ -10,10 +10,6 @@ import {
   ParentBasedSampler,
   TraceIdRatioBasedSampler
 } from "@opentelemetry/sdk-trace-base"
-import {
-  ATTR_SERVICE_NAME,
-  ATTR_SERVICE_VERSION
-} from "@opentelemetry/semantic-conventions"
 import type { AppConfig } from "./config.js"
 import { initOtelInstruments } from "./metrics.js"
 
@@ -33,7 +29,7 @@ const messageOf = (text: string): string => {
   return text
 }
 
-/** An OpenTelemetry error or warning, a failed export say, as a JSON line on stdout. */
+/** An OpenTelemetry error or warning, a failed export say, as one JSON line on stdout. */
 const logLine =
   (level: "error" | "warn", message: string) =>
   (text: string, ...args: unknown[]): void => {
@@ -47,6 +43,15 @@ const logLine =
     )
   }
 
+/** OpenTelemetry's errors and warnings, a failed export say, each one JSON line; the API keeps serving. */
+export const diagLogger: DiagLogger = {
+  error: logLine("error", "telemetry error"),
+  warn: logLine("warn", "telemetry warning"),
+  info: () => undefined,
+  debug: () => undefined,
+  verbose: () => undefined
+}
+
 /**
  * OpenTelemetry per plat5 docs/reference/telemetry.md, from `config`. The OTLP exporters
  * also read their own standard settings, OTEL_EXPORTER_OTLP_HEADERS among them.
@@ -55,28 +60,11 @@ const logLine =
  * door to downstream calls with OTLP off (plat5 docs/guides/write-a-service.md#rules).
  */
 export const initTelemetry = (config: AppConfig): TelemetryHandle => {
-  diag.setLogger(
-    {
-      error: logLine("error", "telemetry error"),
-      warn: logLine("warn", "telemetry warning"),
-      info: () => undefined,
-      debug: () => undefined,
-      verbose: () => undefined
-    },
-    DiagLogLevel.WARN
-  )
+  diag.setLogger(diagLogger, DiagLogLevel.WARN)
   propagation.setGlobalPropagator(new W3CTraceContextPropagator())
 
-  const resource = defaultResource().merge(
-    resourceFromAttributes({
-      ...config.resourceAttributes,
-      [ATTR_SERVICE_NAME]: config.serviceName,
-      [ATTR_SERVICE_VERSION]: config.serviceVersion,
-      "service.namespace": config.serviceNamespace,
-      "service.instance.id": config.serviceInstanceId,
-      "deployment.environment": config.deploymentEnv
-    })
-  )
+  // config layers the resource; it wins over the SDK's defaults.
+  const resource = defaultResource().merge(resourceFromAttributes(config.resource))
 
   const providers: { shutdown: () => Promise<void> }[] = []
 
