@@ -1,13 +1,11 @@
-import { metrics, propagation, trace } from "@opentelemetry/api"
+import { diag, DiagLogLevel, metrics, propagation, trace } from "@opentelemetry/api"
+import { W3CTraceContextPropagator } from "@opentelemetry/core"
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http"
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
-import { resourceFromAttributes } from "@opentelemetry/resources"
+import { defaultResource, resourceFromAttributes } from "@opentelemetry/resources"
+import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics"
 import {
-  AggregationTemporality,
-  PeriodicExportingMetricReader
-} from "@opentelemetry/sdk-metrics"
-import { core, NodeSDK } from "@opentelemetry/sdk-node"
-import {
+  BasicTracerProvider,
   BatchSpanProcessor,
   ParentBasedSampler,
   TraceIdRatioBasedSampler
@@ -19,108 +17,103 @@ import {
 import type { AppConfig } from "./config.js"
 import { initOtelInstruments } from "./metrics.js"
 
-const normalizeEndpoint = (base: string, suffix: string): string => {
-  const trimmed = base.replace(/\/$/, "")
-  if (trimmed.endsWith(suffix)) return trimmed
-  return `${trimmed}${suffix}`
-}
-
-const exporterIncludes = (
-  list: ReadonlyArray<string> | undefined,
-  name: string
-): boolean => (list ?? []).includes(name)
-
-const tracesDestination = (config: AppConfig): string | undefined =>
-  config.otlpTracesEndpoint ??
-  (config.otlpEndpoint
-    ? normalizeEndpoint(config.otlpEndpoint, "/v1/traces")
-    : undefined)
-
-const metricsDestination = (config: AppConfig): string | undefined =>
-  config.otlpMetricsEndpoint ??
-  (config.otlpEndpoint
-    ? normalizeEndpoint(config.otlpEndpoint, "/v1/metrics")
-    : undefined)
-
-const tracesOtlpEnabled = (config: AppConfig): boolean => {
-  if (config.otelSdkDisabled) return false
-  if (!tracesDestination(config)) return false
-  if (config.tracesExporters === undefined) return true
-  return exporterIncludes(config.tracesExporters, "otlp")
-}
-
-const metricsOtlpEnabled = (config: AppConfig): boolean => {
-  if (config.otelSdkDisabled) return false
-  if (!metricsDestination(config)) return false
-  if (config.metricsExporters === undefined) return true
-  return exporterIncludes(config.metricsExporters, "otlp")
-}
-
 export type TelemetryHandle = {
   shutdown: () => Promise<void>
 }
 
-export const initTelemetry = (config: AppConfig): TelemetryHandle => {
-  const resource = resourceFromAttributes({
-    ...config.resourceAttributes,
-    [ATTR_SERVICE_NAME]: config.serviceName,
-    [ATTR_SERVICE_VERSION]: config.serviceVersion,
-    "service.namespace": config.serviceNamespace,
-    "service.instance.id": config.serviceInstanceId,
-    "deployment.environment": config.deploymentEnv
-  })
+/** An error's message: OpenTelemetry hands an exception over as JSON, stack and all. */
+const messageOf = (text: string): string => {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    const message = (parsed as { message?: unknown } | null)?.message
+    if (typeof message === "string") return message
+  } catch {
+    // Not JSON: the text is the message.
+  }
+  return text
+}
 
-  const enableTraces = tracesOtlpEnabled(config)
-  const enableMetricsOtlp = metricsOtlpEnabled(config)
-
-  // The SDK registers a propagator only when it exports traces. Without one, traceparent
-  // still passes from the front door to downstream calls (plat5
-  // docs/guides/write-a-service.md#rules).
-  if (!enableTraces) propagation.setGlobalPropagator(new core.W3CTraceContextPropagator())
-
-  if (!enableTraces && !enableMetricsOtlp) {
-    // Still bind instruments so dual-write is a no-op against the global meter.
-    initOtelInstruments()
-    return { shutdown: async () => undefined }
+/** An OpenTelemetry error or warning, a failed export say, as a JSON line on stdout. */
+const logLine =
+  (level: "error" | "warn", message: string) =>
+  (text: string, ...args: unknown[]): void => {
+    console.log(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level,
+        message,
+        error_message: [messageOf(text), ...args.map(String)].join(" ")
+      })
+    )
   }
 
-  const ratio = Math.min(1, Math.max(0, config.tracesSamplerRatio))
-  const spanProcessors = enableTraces
-    ? [
-        new BatchSpanProcessor(
-          new OTLPTraceExporter({ url: tracesDestination(config)! })
-        )
+/**
+ * OpenTelemetry per plat5 docs/reference/telemetry.md, from `config`. The OTLP exporters
+ * also read their own standard settings, OTEL_EXPORTER_OTLP_HEADERS among them.
+ *
+ * W3C Trace Context is the propagator either way, so `traceparent` passes from the front
+ * door to downstream calls with OTLP off (plat5 docs/guides/write-a-service.md#rules).
+ */
+export const initTelemetry = (config: AppConfig): TelemetryHandle => {
+  diag.setLogger(
+    {
+      error: logLine("error", "telemetry error"),
+      warn: logLine("warn", "telemetry warning"),
+      info: () => undefined,
+      debug: () => undefined,
+      verbose: () => undefined
+    },
+    DiagLogLevel.WARN
+  )
+  propagation.setGlobalPropagator(new W3CTraceContextPropagator())
+
+  const resource = defaultResource().merge(
+    resourceFromAttributes({
+      ...config.resourceAttributes,
+      [ATTR_SERVICE_NAME]: config.serviceName,
+      [ATTR_SERVICE_VERSION]: config.serviceVersion,
+      "service.namespace": config.serviceNamespace,
+      "service.instance.id": config.serviceInstanceId,
+      "deployment.environment": config.deploymentEnv
+    })
+  )
+
+  const providers: { shutdown: () => Promise<void> }[] = []
+
+  if (config.otlpTracesUrl !== undefined) {
+    const tracerProvider = new BasicTracerProvider({
+      resource,
+      sampler: new ParentBasedSampler({
+        root: new TraceIdRatioBasedSampler(config.tracesSamplerRatio)
+      }),
+      spanProcessors: [
+        new BatchSpanProcessor(new OTLPTraceExporter({ url: config.otlpTracesUrl }))
       ]
-    : []
+    })
+    trace.setGlobalTracerProvider(tracerProvider)
+    providers.push(tracerProvider)
+  }
 
-  const metricReader = enableMetricsOtlp
-    ? new PeriodicExportingMetricReader({
-        exporter: new OTLPMetricExporter({
-          url: metricsDestination(config)!,
-          temporalityPreference: AggregationTemporality.CUMULATIVE
-        }),
-        exportIntervalMillis: config.metricExportIntervalMs
-      })
-    : undefined
-
-  const sdk = new NodeSDK({
-    resource,
-    spanProcessors,
-    metricReader,
-    sampler: enableTraces
-      ? new ParentBasedSampler({
-          root: new TraceIdRatioBasedSampler(ratio)
+  if (config.otlpMetricsUrl !== undefined) {
+    const meterProvider = new MeterProvider({
+      resource,
+      readers: [
+        new PeriodicExportingMetricReader({
+          exporter: new OTLPMetricExporter({ url: config.otlpMetricsUrl }),
+          exportIntervalMillis: config.metricExportIntervalMs
         })
-      : undefined
-  })
+      ]
+    })
+    metrics.setGlobalMeterProvider(meterProvider)
+    providers.push(meterProvider)
+  }
 
-  sdk.start()
-  // After MeterProvider is installed (gateway/control-plane pattern).
+  // After the MeterProvider is installed; with OTLP metrics off they bind to the no-op meter.
   initOtelInstruments()
 
   return {
     shutdown: async () => {
-      await sdk.shutdown()
+      await Promise.all(providers.map((p) => p.shutdown()))
     }
   }
 }

@@ -53,18 +53,19 @@ type OtelInstruments = {
 let otel: OtelInstruments | undefined
 
 /**
- * Create OTEL instruments after MeterProvider is set (gateway dual-write pattern).
- * Safe to call when OTLP is off — instruments bind to the global (no-op) meter.
+ * The OTLP side of every series on /metrics: the HTTP and DB series written twice, and the
+ * process series observed. Created after the MeterProvider is set; with OTLP metrics off
+ * they bind to the global (no-op) meter.
  */
 export const initOtelInstruments = (): void => {
   if (otel) return
   const meter = metrics.getMeter("api")
   otel = {
     httpRequests: meter.createCounter("http_requests_total", {
-      description: "Total HTTP requests processed"
+      description: "Total HTTP requests handled by the api service"
     }),
     httpDuration: meter.createHistogram("http_request_duration_seconds", {
-      description: "HTTP request duration in seconds",
+      description: "HTTP request latency observed by the api service",
       unit: "s",
       advice: { explicitBucketBoundaries: HTTP_DURATION_BUCKETS }
     }),
@@ -80,6 +81,26 @@ export const initOtelInstruments = (): void => {
       advice: { explicitBucketBoundaries: DB_DURATION_BUCKETS }
     })
   }
+  // The process series /metrics has (collectDefaultMetrics), for OTLP too.
+  const startTime = Date.now() / 1000 - process.uptime()
+  meter
+    .createObservableGauge("process_resident_memory_bytes", {
+      description: "Resident memory size in bytes"
+    })
+    .addCallback((result) => result.observe(process.memoryUsage.rss()))
+  meter
+    .createObservableCounter("process_cpu_seconds_total", {
+      description: "Total user and system CPU time spent in seconds"
+    })
+    .addCallback((result) => {
+      const usage = process.cpuUsage()
+      result.observe((usage.user + usage.system) / 1_000_000)
+    })
+  meter
+    .createObservableGauge("process_start_time_seconds", {
+      description: "Start time of the process since unix epoch in seconds"
+    })
+    .addCallback((result) => result.observe(startTime))
 }
 
 export const initMetrics = (): void => {

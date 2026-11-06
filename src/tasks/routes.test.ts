@@ -1,5 +1,5 @@
 import { propagation } from "@opentelemetry/api"
-import { core } from "@opentelemetry/sdk-node"
+import { W3CTraceContextPropagator } from "@opentelemetry/core"
 import assert from "node:assert/strict"
 import { createServer, type IncomingHttpHeaders } from "node:http"
 import type { AddressInfo } from "node:net"
@@ -14,7 +14,7 @@ import { MEMBER_HEADER, PROJECT_HEADER } from "./routes.js"
 import { TasksStore } from "./store.js"
 
 // initTelemetry's propagator when nothing exports traces.
-propagation.setGlobalPropagator(new core.W3CTraceContextPropagator())
+propagation.setGlobalPropagator(new W3CTraceContextPropagator())
 
 const environment = "01jd8x3k7q0000000000000000"
 const other = "01jd8x3k7q0000000000000001"

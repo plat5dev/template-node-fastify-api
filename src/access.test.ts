@@ -1,5 +1,5 @@
 import { propagation, ROOT_CONTEXT, trace, TraceFlags } from "@opentelemetry/api"
-import { core } from "@opentelemetry/sdk-node"
+import { W3CTraceContextPropagator } from "@opentelemetry/core"
 import assert from "node:assert/strict"
 import { createServer, type IncomingHttpHeaders } from "node:http"
 import type { AddressInfo } from "node:net"
@@ -7,7 +7,7 @@ import { test, type TestContext } from "node:test"
 import { AccessClient, type Question } from "./access.js"
 
 // initTelemetry's propagator when nothing exports traces.
-propagation.setGlobalPropagator(new core.W3CTraceContextPropagator())
+propagation.setGlobalPropagator(new W3CTraceContextPropagator())
 
 const member = "01jd8x3k7q00000000000000mm"
 const project = "01jd8x3k7q00000000000000pp"
