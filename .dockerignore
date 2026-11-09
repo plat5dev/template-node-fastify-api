@@ -4,4 +4,3 @@ data
 .git
 *.md
 .DS_Store
-dist

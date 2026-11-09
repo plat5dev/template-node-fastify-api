@@ -1,19 +1,18 @@
+# Node runs the TypeScript in src/ as it is, its type stripping erasing the types: no build step.
+
 # ======================================================================
 # Local — hot reload
 # ======================================================================
-FROM node:22-bookworm AS local
+FROM node:26-trixie-slim AS local
 
 WORKDIR /app
 
 # sqlite3, to look in the database or reset the lifecycle cursor (README).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ sqlite3 \
-    && rm -rf /var/lib/apt/lists/* \
-    && corepack enable && corepack prepare pnpm@10.12.1 --activate
+RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
 
-# pnpm-workspace.yaml carries onlyBuiltDependencies so better-sqlite3 scripts run
-COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
-RUN pnpm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
 
@@ -23,44 +22,26 @@ ENV DATABASE_PATH=/data/app.db
 
 EXPOSE 3000
 
-CMD ["pnpm", "run", "dev"]
-
-# ======================================================================
-# Builder
-# ======================================================================
-FROM node:22-bookworm AS builder
-
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ \
-    && rm -rf /var/lib/apt/lists/* \
-    && corepack enable && corepack prepare pnpm@10.12.1 --activate
-
-COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
-
-COPY . .
-# The release this image reports as service.version; dev without one.
-ARG VERSION=dev
-RUN node -e 'require("node:fs").writeFileSync("src/version.ts", `export const VERSION = ${JSON.stringify(process.env.VERSION)}\n`)'
-RUN pnpm run build && pnpm prune --prod
+CMD ["node", "--watch", "src/main.ts"]
 
 # ======================================================================
 # Prod — minimal
 # ======================================================================
-FROM node:22-bookworm-slim AS prod
+FROM node:26-trixie-slim AS prod
 
 WORKDIR /app
 
-RUN groupadd -r app && useradd -r -g app app \
-  && mkdir -p /data && chown app:app /data
+RUN mkdir -p /data && chown node:node /data
 
-COPY --from=builder --chown=app:app /app/package.json ./
-COPY --from=builder --chown=app:app /app/node_modules ./node_modules
-COPY --from=builder --chown=app:app /app/dist ./dist
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
-USER app
+COPY src ./src
+# The release this image reports as service.version; dev without one.
+ARG VERSION=dev
+RUN node -e 'require("node:fs").writeFileSync("src/version.ts", `export const VERSION = ${JSON.stringify(process.env.VERSION)}\n`)'
+
+USER node
 
 ENV NODE_ENV=production
 ENV PORT=3000
@@ -69,4 +50,4 @@ ENV DATABASE_PATH=/data/app.db
 
 EXPOSE 3000
 
-CMD ["node", "dist/main.js"]
+CMD ["node", "src/main.ts"]

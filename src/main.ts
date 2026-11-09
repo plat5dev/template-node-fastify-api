@@ -1,51 +1,37 @@
-import "dotenv/config"
-import { AccessClient } from "./access.js"
-import { buildApp } from "./app.js"
-import { loadConfig } from "./config.js"
-import { connect, migrate, type Db } from "./db.js"
-import { createInternalServer } from "./internal.js"
-import { LifecycleConsumer } from "./lifecycle.js"
-import { initMetrics } from "./metrics.js"
-import { ProfilesStore } from "./profiles/store.js"
-import { TasksStore } from "./tasks/store.js"
-import { initTelemetry } from "./telemetry.js"
+import { accessClient } from "./access.ts"
+import { buildApp } from "./app.ts"
+import { loadConfig } from "./config.ts"
+import { connect, migrate } from "./db.ts"
+import { createInternalServer } from "./internal.ts"
+import { lifecycleReader } from "./lifecycle.ts"
+import { log } from "./log.ts"
+import { profilesStore } from "./profiles/store.ts"
+import { tasksStore } from "./tasks/store.ts"
+import { initTelemetry } from "./telemetry.ts"
 
 const config = loadConfig()
 const telemetry = initTelemetry(config)
-initMetrics()
 
-const db: Db = connect(config.databasePath)
+const db = connect(config.databasePath)
 migrate(db)
-
-const profiles = new ProfilesStore(db)
-const tasks = new TasksStore(db)
+const tasks = tasksStore(db)
+const profiles = profilesStore(db)
 
 const app = await buildApp({
   tasks,
   profiles,
-  access: new AccessClient(config.identityInternalUrl),
+  access: accessClient(config.identityInternalUrl),
   assigneePermission: config.taskAssigneePermission,
-  docsVersion: config.resource["service.version"]
+  version: config.resource["service.version"] ?? "dev"
 })
+const internal = createInternalServer(db, telemetry.metrics)
 
-const internal = createInternalServer(db)
-
-const lifecycle = config.identityInternalUrl
-  ? new LifecycleConsumer(config.identityInternalUrl, db, tasks, profiles)
-  : undefined
 // SIGINT or SIGTERM aborts it: the lifecycle reader stops, its read in flight cancelled.
 const stopping = new AbortController()
 let following: Promise<void> = Promise.resolve()
 
 const shutdown = async (signal: string) => {
-  console.log(
-    JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: "info",
-      message: "shutting down",
-      signal
-    })
-  )
+  log("info", "shutting down", { signal })
   stopping.abort()
   await app.close()
   await new Promise<void>((resolve) => internal.close(() => resolve()))
@@ -55,35 +41,20 @@ const shutdown = async (signal: string) => {
   await telemetry.shutdown()
   process.exit(0)
 }
-
 process.on("SIGINT", () => void shutdown("SIGINT"))
 process.on("SIGTERM", () => void shutdown("SIGTERM"))
 
-await new Promise<void>((resolve) => {
-  internal.listen(config.internalPort, "0.0.0.0", () => resolve())
-})
-
+await new Promise<void>((resolve) => internal.listen(config.internalPort, "0.0.0.0", resolve))
 await app.listen({ port: config.port, host: "0.0.0.0" })
+log("info", "starting api server", { port: config.port, internal_port: config.internalPort })
 
-console.log(
-  JSON.stringify({
-    timestamp: new Date().toISOString(),
-    level: "info",
-    message: "starting api server",
-    port: config.port,
-    internal_port: config.internalPort
-  })
-)
-
-if (lifecycle) {
-  following = lifecycle.run(stopping.signal)
+if (config.identityInternalUrl !== undefined) {
+  following = lifecycleReader({ identityUrl: config.identityInternalUrl, db, tasks, profiles }).run(
+    stopping.signal
+  )
 } else {
-  console.log(
-    JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: "warn",
-      message:
-        "IDENTITY_INTERNAL_URL is unset: not reading identity's lifecycle log, so a purged project's tasks and a deleted person's profile are kept, and a task's assignee can't be checked (503)"
-    })
+  log(
+    "warn",
+    "IDENTITY_INTERNAL_URL is unset: not reading identity's lifecycle log, so a purged project's tasks and a deleted person's profile are kept, and a task's assignee can't be checked (503)"
   )
 }

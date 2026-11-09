@@ -1,7 +1,7 @@
 import { diag, DiagLogLevel } from "@opentelemetry/api"
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { diagLogger } from "./telemetry.js"
+import { diagLogger } from "./telemetry.ts"
 
 // A failed export reaches OpenTelemetry's diagnostic logger, which writes one JSON line.
 test("a failed export is one JSON error line", (t) => {

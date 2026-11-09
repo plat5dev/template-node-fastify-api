@@ -1,11 +1,10 @@
-export type ErrorKind =
-  | "auth"
-  | "network"
-  | "db"
-  | "io"
-  | "internal"
-  | "validation"
+/** What failed, for a 5xx's `error_type` and `error.type` (plat5 docs/reference/telemetry.md#error-fields-5xx-only). */
+export type ErrorKind = "auth" | "network" | "db" | "io" | "internal" | "validation"
 
+/** A field and its sentence, in a 422's `details.fields`. */
+export type Field = { path: string; message: string }
+
+/** An error the API answers, in the Plat5 envelope (plat5 docs/reference/errors.md). */
 export class ApiError extends Error {
   readonly type: string
   readonly code: string
@@ -43,42 +42,37 @@ export class ApiError extends Error {
   }
 }
 
-// Common errors. Each fallback sentence is plat5 docs/reference/error-copy.md's.
+// Each fallback sentence is plat5 docs/reference/error-copy.md's.
 
 /** The 422 sentence when nothing more specific applies. */
 export const FALLBACK_VALIDATION = "That doesn't look right."
 
 /**
- * A 400: the request lacks something the API requires of the front door, such as
- * `X-Plat5-Member-Id` on a create.
+ * A 400: a request malformed before its values are read, such as a body not sent as JSON,
+ * or a create without the `X-Plat5-Member-Id` the API requires of the front door.
  */
 export const invalidRequest = (): ApiError =>
   new ApiError({
     type: "invalid_request_error",
     code: "INVALID_REQUEST",
     message: "Malformed request.",
-    details: null,
     status: 400
   })
 
-export const validationError = (
-  message = FALLBACK_VALIDATION,
-  details: unknown = null
-): ApiError =>
+/** A 422 listing `fields`, the first one's sentence its message. */
+export const validationError = (fields: Field[]): ApiError =>
   new ApiError({
     type: "invalid_request_error",
     code: "VALIDATION_ERROR",
-    message,
-    details,
+    message: fields[0]?.message ?? FALLBACK_VALIDATION,
+    details: { fields },
     status: 422,
     kind: "validation"
   })
 
 /** A 422 for one field. No message is the fallback sentence. */
-export const fieldError = (
-  path: string,
-  message = FALLBACK_VALIDATION
-): ApiError => validationError(message, { fields: [{ path, message }] })
+export const fieldError = (path: string, message = FALLBACK_VALIDATION): ApiError =>
+  validationError([{ path, message }])
 
 export const notFound = (resource: string, id: string | null): ApiError =>
   new ApiError({
@@ -89,36 +83,13 @@ export const notFound = (resource: string, id: string | null): ApiError =>
     status: 404
   })
 
-export const conflict = (field: string, value: string | null): ApiError =>
-  new ApiError({
-    type: "invalid_request_error",
-    code: "CONFLICT",
-    message: "That already exists.",
-    details: { field, value },
-    status: 409
-  })
-
-/** The largest request body the API reads: 1 MiB. */
-export const MAX_BODY_BYTES = 1 << 20
-
-export const payloadTooLarge = (maxSizeBytes = MAX_BODY_BYTES): ApiError =>
-  new ApiError({
-    type: "invalid_request_error",
-    code: "PAYLOAD_TOO_LARGE",
-    message: "Request body is too large.",
-    details: { max_size_bytes: maxSizeBytes },
-    status: 413
-  })
-
 /** A 500. Its message is always the fallback sentence: never a framework's or a library's. */
 export const internalError = (): ApiError =>
   new ApiError({
     type: "api_error",
     code: "INTERNAL_ERROR",
     message: "An unexpected error occurred.",
-    details: null,
-    status: 500,
-    kind: "internal"
+    status: 500
   })
 
 export const serviceUnavailable = (): ApiError =>
@@ -126,7 +97,6 @@ export const serviceUnavailable = (): ApiError =>
     type: "api_error",
     code: "SERVICE_UNAVAILABLE",
     message: "Service temporarily unavailable.",
-    details: null,
     status: 503,
     kind: "network"
   })

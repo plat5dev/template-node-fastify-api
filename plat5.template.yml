@@ -12,6 +12,7 @@ operator_routes: ./routes.operator.yml
 
 substitute:
   - package.json
+  - package-lock.json
 
 # plat5 init copies this starter into a project's api/ folder. plat5 start
 # runs the API from this compose file.
@@ -20,5 +21,5 @@ app:
 
 # To run the API on your own machine instead: plat5 start -x app, then
 next:
-  - pnpm install
-  - TASK_ASSIGNEE_PERMISSION=project:read pnpm run dev
+  - npm install
+  - TASK_ASSIGNEE_PERMISSION=project:read npm run dev

@@ -21,6 +21,8 @@ export const redactQuery = (query: string): string =>
     .split("&")
     .map((part) => {
       const eq = part.indexOf("=")
-      return eq >= 0 && REDACTED_QUERY_KEYS.has(part.slice(0, eq)) ? `${part.slice(0, eq)}=REDACTED` : part
+      return eq >= 0 && REDACTED_QUERY_KEYS.has(part.slice(0, eq))
+        ? `${part.slice(0, eq)}=REDACTED`
+        : part
     })
     .join("&")

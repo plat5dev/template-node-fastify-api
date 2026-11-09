@@ -3,10 +3,10 @@ import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
 import { test, type TestContext } from "node:test"
 import { setTimeout as sleep } from "node:timers/promises"
-import { connect, migrate } from "./db.js"
-import { decodePage, LifecycleConsumer, TYPES, type Event } from "./lifecycle.js"
-import { ProfilesStore } from "./profiles/store.js"
-import { TasksStore } from "./tasks/store.js"
+import { connect, migrate } from "./db.ts"
+import { decodePage, type Event, lifecycleReader, TYPES } from "./lifecycle.ts"
+import { profilesStore } from "./profiles/store.ts"
+import { tasksStore } from "./tasks/store.ts"
 
 const purged = "01jd8x3k7q0000000000000001"
 const kept = "01jd8x3k7q0000000000000002"
@@ -14,7 +14,7 @@ const gone = "01jd8x3k7q00000000000000u1"
 const stays = "01jd8x3k7q00000000000000u2"
 const fresh = "01jd8x3k7q00000000000000u3"
 
-type Served = Partial<Event> & { id: string; type: string }
+type Served = Event & { type: string }
 
 /**
  * Identity, serving the one lifecycle log at /internal/events as identity does: types
@@ -33,8 +33,11 @@ class Identity {
   url = ""
   private readonly added = new Set<() => void>()
   private readonly waiting: (() => void)[] = []
+  private readonly events: Served[]
 
-  constructor(private readonly events: Served[] = []) {}
+  constructor(events: Served[] = []) {
+    this.events = events
+  }
 
   /** Appends an event and wakes any waiting read. */
   add(event: Served): void {
@@ -49,9 +52,7 @@ class Identity {
 
   /** The events after `after` that match `types`, at most two, and whether more follow. */
   private page(after: string, types: string[]): { events: Served[]; more: boolean } {
-    const match = this.events.filter(
-      (e) => Number(e.id) > Number(after) && types.includes(e.type)
-    )
+    const match = this.events.filter((e) => Number(e.id) > Number(after) && types.includes(e.type))
     return { events: match.slice(0, 2), more: match.length > 2 }
   }
 
@@ -108,9 +109,9 @@ const setup = async (t: TestContext, identity: Identity, retryMs = 10) => {
   const db = connect(":memory:")
   migrate(db)
   t.after(() => db.close())
-  const tasks = new TasksStore(db)
-  const profiles = new ProfilesStore(db)
-  const consumer = new LifecycleConsumer(identity.url, db, tasks, profiles, retryMs)
+  const tasks = tasksStore(db)
+  const profiles = profilesStore(db)
+  const consumer = lifecycleReader({ identityUrl: identity.url, db, tasks, profiles, retryMs })
 
   const addTask = (id: string, projectId: string) =>
     tasks.insert({
@@ -124,16 +125,11 @@ const setup = async (t: TestContext, identity: Identity, retryMs = 10) => {
       updated_at: "now"
     })
   const count = (projectId: string) =>
-    tasks.listByProject(projectId, { limit: 100, startingAfter: "" }).items.length
-  const addProfile = (userId: string) =>
-    profiles.insert({ user_id: userId, bio: "hi", created_at: "now", updated_at: "now" })
-  const hasProfile = (userId: string) => profiles.findByUserId(userId) !== null
-  const cursor = () => {
-    const row = db.prepare(`SELECT event_id FROM feed_cursors WHERE id = 1`).get() as
-      | { event_id: string }
-      | undefined
-    return row?.event_id ?? ""
-  }
+    tasks.list(projectId, { limit: 100, startingAfter: "" }).items.length
+  const addProfile = (userId: string) => profiles.upsert(userId, "hi", "now")
+  const hasProfile = (userId: string) =>
+    db.prepare(`SELECT 1 FROM profiles WHERE user_id = ?`).get(userId) !== undefined
+  const cursor = consumer.cursor
   const logged = (): Record<string, unknown>[] =>
     logs.mock.calls.map((call) => JSON.parse(String(call.arguments[0])))
 
@@ -333,23 +329,39 @@ test("a page commits with its cursor", async (t) => {
   assert.equal(s.cursor(), "")
 })
 
-test("a page as Go decodes it", () => {
+test("a page: its events by their exact keys, an event without an id skipped", () => {
   assert.deepEqual(decodePage({ events: [] }), [])
   const events = decodePage({
-    events: [{ id: "7", Type: "node.purged", kind: null, extra: 1 }, null],
+    events: [
+      { id: "7", Type: "node.purged", kind: "project", NODE_ID: "x", extra: 1 },
+      { id: "8", type: "user.deleted", user_id: 5 },
+      { type: "user.deleted", user_id: "u" },
+      { id: "", type: "user.deleted", user_id: "u" },
+      null,
+      "x"
+    ],
     has_more: "ignored"
   })
-  assert.deepEqual(events[0], { id: "7", type: "node.purged", kind: "", node_id: "", user_id: "" })
-  assert.equal(events[1]!.id, "")
-  for (const page of [
-    [],
-    null,
-    {},
-    { events: null },
-    { events: {} },
-    { events: [{ id: 7 }] },
-    { events: ["x"] }
-  ]) {
+  assert.deepEqual(events, [
+    { id: "7", type: undefined, kind: "project", node_id: undefined, user_id: undefined },
+    { id: "8", type: "user.deleted", kind: undefined, node_id: undefined, user_id: undefined }
+  ])
+  for (const page of [[], null, {}, { events: null }, { events: {} }]) {
     assert.throws(() => decodePage(page), JSON.stringify(page))
   }
+})
+
+test("an event without what it acts on, or with a kind not exactly project, changes nothing", async (t) => {
+  const identity = new Identity([
+    { id: "1", type: "node.purged", kind: "project" },
+    { id: "2", type: "user.deleted" },
+    { id: "3", type: "node.purged", kind: "Project", node_id: purged }
+  ])
+  const s = await setup(t, identity)
+  s.seed()
+  assert.equal(await s.consumer.step(), true)
+  assert.equal(await s.consumer.step(), true)
+  assert.equal(s.cursor(), "3")
+  assert.equal(s.count(purged), 1)
+  assert.equal(s.hasProfile(gone), true)
 })

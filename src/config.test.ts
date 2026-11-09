@@ -1,22 +1,18 @@
 import assert from "node:assert/strict"
-import { test } from "node:test"
 import { spawnSync } from "node:child_process"
 import { tmpdir } from "node:os"
+import { test } from "node:test"
 import { fileURLToPath } from "node:url"
-import { loadConfig, serviceResource } from "./config.js"
+import { loadConfig, serviceResource } from "./config.ts"
 
-const setPermission = (value: string | undefined) => {
-  if (value === undefined) delete process.env.TASK_ASSIGNEE_PERMISSION
-  else process.env.TASK_ASSIGNEE_PERMISSION = value
-}
+const permission = { TASK_ASSIGNEE_PERMISSION: "project:read" }
 
-const before = process.env.TASK_ASSIGNEE_PERMISSION
-test.afterEach(() => setPermission(before))
+/** The config from `env` and the permission, nothing else set. */
+const withOtel = (env: Record<string, string>) => loadConfig({ ...permission, ...env })
 
 test("TASK_ASSIGNEE_PERMISSION unset or not a permission name: the API won't start", () => {
   for (const value of [undefined, "", "  ", " project:read", "Project:Read", "a".repeat(65)]) {
-    setPermission(value)
-    assert.throws(loadConfig, {
+    assert.throws(() => loadConfig({ TASK_ASSIGNEE_PERMISSION: value }), {
       message:
         "TASK_ASSIGNEE_PERMISSION is unset or isn't a permission name ([a-z0-9:._-], at most 64 characters): set it to the permission an assignee needs on the task's project (the starter's is project:read)"
     })
@@ -24,48 +20,33 @@ test("TASK_ASSIGNEE_PERMISSION unset or not a permission name: the API won't sta
 })
 
 test("TASK_ASSIGNEE_PERMISSION names the assignee's permission", () => {
-  setPermission("tasks:assignable")
-  assert.equal(loadConfig().taskAssigneePermission, "tasks:assignable")
+  assert.equal(
+    loadConfig({ TASK_ASSIGNEE_PERMISSION: "tasks:assignable" }).taskAssigneePermission,
+    "tasks:assignable"
+  )
 })
 
-const OTEL_VARIABLES = [
-  "OTEL_SDK_DISABLED",
-  "OTEL_EXPORTER_OTLP_ENDPOINT",
-  "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-  "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-  "OTEL_EXPORTER_OTLP_PROTOCOL",
-  "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
-  "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
-  "OTEL_TRACES_EXPORTER",
-  "OTEL_METRICS_EXPORTER",
-  "OTEL_TRACES_SAMPLER_RATIO",
-  "OTEL_METRIC_EXPORT_INTERVAL",
-  "OTEL_RESOURCE_ATTRIBUTES",
-  "OTEL_SERVICE_NAME",
-  "OTEL_SERVICE_NAMESPACE",
-  "OTEL_SERVICE_VERSION",
-  "OTEL_SERVICE_INSTANCE_ID",
-  "OTEL_DEPLOYMENT_ENV",
-  "DEPLOYMENT_ENV",
-  "CI_COMMIT_TAG",
-  "HOSTNAME"
-]
-
-/** The config with `env` set and every other telemetry variable unset. */
-const withOtel = (env: Record<string, string>) => {
-  const saved = OTEL_VARIABLES.map((name) => [name, process.env[name]] as const)
-  for (const name of OTEL_VARIABLES) delete process.env[name]
-  Object.assign(process.env, env)
-  setPermission("project:read")
-  try {
-    return loadConfig()
-  } finally {
-    for (const [name, value] of saved) {
-      if (value === undefined) delete process.env[name]
-      else process.env[name] = value
-    }
+test("the app's settings: defaults, and an empty variable is unset", () => {
+  const config = withOtel({ IDENTITY_INTERNAL_URL: "", DATABASE_PATH: "" })
+  assert.deepEqual(
+    [config.port, config.internalPort, config.databasePath, config.identityInternalUrl],
+    [3000, 3001, "./data/app.db", undefined]
+  )
+  const set = withOtel({
+    PORT: "8080",
+    INTERNAL_PORT: "8081",
+    IDENTITY_INTERNAL_URL: "http://identity:3001"
+  })
+  assert.deepEqual(
+    [set.port, set.internalPort, set.identityInternalUrl],
+    [8080, 8081, "http://identity:3001"]
+  )
+  for (const value of ["http", "0", "70000", "80.5"]) {
+    assert.throws(() => withOtel({ PORT: value }), {
+      message: `PORT is "${value}": want a port number`
+    })
   }
-}
+})
 
 test("telemetry defaults: no OTLP without an endpoint", () => {
   const config = withOtel({})
@@ -128,7 +109,8 @@ test("telemetry: a variable set but invalid stops the API, naming it", () => {
   ] as const) {
     assert.throws(
       () => withOtel({ [name]: value }),
-      (err: Error) => err.message.startsWith(`${name} is "${value}": want `) ||
+      (err: Error) =>
+        err.message.startsWith(`${name} is "${value}": want `) ||
         err.message === `${name} is "${value}": only http/protobuf is supported`,
       `${name}=${value}`
     )
@@ -151,8 +133,7 @@ test("telemetry: valid values are accepted", () => {
 
 test("an invalid telemetry value stops the API at boot, naming the variable", () => {
   const main = fileURLToPath(new URL("./main.ts", import.meta.url))
-  // Outside the repo, so no .env is read; tsx from here.
-  const run = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), main], {
+  const run = spawnSync(process.execPath, [main], {
     cwd: tmpdir(),
     encoding: "utf8",
     env: {
@@ -162,7 +143,10 @@ test("an invalid telemetry value stops the API at boot, naming the variable", ()
     }
   })
   assert.equal(run.status, 1)
-  assert.match(`${run.stdout}${run.stderr}`, /OTEL_TRACES_SAMPLER_RATIO is "2": want a number from 0 to 1/)
+  assert.match(
+    `${run.stdout}${run.stderr}`,
+    /OTEL_TRACES_SAMPLER_RATIO is "2": want a number from 0 to 1/
+  )
 })
 
 // service.version: OTEL_SERVICE_VERSION, then OTEL_RESOURCE_ATTRIBUTES, then the build's
@@ -182,7 +166,8 @@ test("service.version: the build's VERSION, else dev; the variables override it"
 test("the resource: defaults, then OTEL_RESOURCE_ATTRIBUTES and OTEL_SERVICE_NAME, then the convenience variables", () => {
   const bag = withOtel({
     HOSTNAME: "host-1",
-    OTEL_RESOURCE_ATTRIBUTES: "service.name=bag,service.namespace=edge,service.instance.id=i-1,team=a%20b"
+    OTEL_RESOURCE_ATTRIBUTES:
+      "service.name=bag,service.namespace=edge,service.instance.id=i-1,team=a%20b"
   })
   assert.deepEqual(bag.resource, {
     "service.name": "bag",
@@ -207,7 +192,9 @@ test("the resource: defaults, then OTEL_RESOURCE_ATTRIBUTES and OTEL_SERVICE_NAM
     "deployment.environment": "staging"
   })
   assert.equal(
-    withOtel({ DEPLOYMENT_ENV: "staging", OTEL_DEPLOYMENT_ENV: "prod" }).resource["deployment.environment"],
+    withOtel({ DEPLOYMENT_ENV: "staging", OTEL_DEPLOYMENT_ENV: "prod" }).resource[
+      "deployment.environment"
+    ],
     "prod"
   )
 })

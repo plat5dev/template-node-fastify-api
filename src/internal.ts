@@ -1,52 +1,45 @@
-import { createServer, type IncomingMessage, type Server } from "node:http"
-import type { Db } from "./db.js"
-import { notFound } from "./errors.js"
-import { collectMetrics, metricsContentType } from "./metrics.js"
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
+import type { Db } from "./db.ts"
+import { notFound } from "./errors.ts"
 
 const JSON_TYPE = "application/json; charset=utf-8"
 
-const requestIdOf = (req: IncomingMessage): string | null => {
-  const value = req.headersDistinct["x-request-id"]?.[0]
-  return value ? value : null
-}
-
-/** How long the readiness check waits for the database. */
-const READY_TIMEOUT_MS = 2_000
+/** What answers `/metrics`: the Prometheus text of every series. */
+export type MetricsHandler = (req: IncomingMessage, res: ServerResponse) => void
 
 /**
- * The internal port: liveness, readiness (the database answers), and the Prometheus
- * scrape. GET (and HEAD) only; anything else is the 404 envelope.
+ * The internal port: liveness, readiness (the database answers), and the Prometheus scrape.
+ * GET (and HEAD) only; anything else is the 404 envelope. Not traced.
  */
-export const createInternalServer = (db: Db): Server =>
-  createServer(async (req, res) => {
-    const path = req.url?.split("?")[0] ?? "/"
-    const method = req.method ?? "GET"
-    const send = (status: number, contentType: string, body: string) => {
+export const createInternalServer = (db: Db, metrics: MetricsHandler): Server =>
+  createServer((req, res) => {
+    const send = (status: number, body: string) => {
       res.writeHead(status, {
-        "content-type": contentType,
+        "content-type": JSON_TYPE,
         "content-length": Buffer.byteLength(body)
       })
-      res.end(method === "HEAD" ? undefined : body)
+      res.end(body)
     }
-    if (method === "GET" || method === "HEAD") {
-      if (path === "/health/live") return send(200, JSON_TYPE, `{"status":"healthy"}`)
+    const path = req.url?.split("?")[0]
+    if (req.method === "GET" || req.method === "HEAD") {
+      if (path === "/health/live") return send(200, `{"status":"healthy"}`)
       if (path === "/health/ready") {
-        const started = performance.now()
         try {
           db.prepare("SELECT 1").get()
-          if (performance.now() - started > READY_TIMEOUT_MS) throw new Error("slow")
-          return send(200, JSON_TYPE, `{"status":"healthy"}`)
+          return send(200, `{"status":"healthy"}`)
         } catch {
-          return send(503, JSON_TYPE, `{"status":"unhealthy"}`)
+          return send(503, `{"status":"unhealthy"}`)
         }
       }
-      if (path === "/metrics") {
-        try {
-          return send(200, metricsContentType(), await collectMetrics())
-        } catch {
-          return send(500, "text/plain; charset=utf-8", "metrics collection failed")
-        }
-      }
+      if (path === "/metrics") return metrics(req, res)
     }
-    send(404, JSON_TYPE, JSON.stringify(notFound("resource", null).envelope(requestIdOf(req))))
+    const requestId = req.headers["x-request-id"]
+    send(
+      404,
+      JSON.stringify(
+        notFound("resource", null).envelope(
+          typeof requestId === "string" && requestId !== "" ? requestId : null
+        )
+      )
+    )
   })

@@ -9,9 +9,7 @@
  * Changes are `{ from, to }` for the fields that changed. A create names what it made.
  * A delete sends nothing: the route and its path say what happened. Never a secret.
  */
-import { trace } from "@opentelemetry/api"
 import type { FastifyReply } from "fastify"
-import { traceContextOf } from "./middleware/observability.js"
 
 export const DETAILS_HEADER = "X-Plat5-Audit-Details"
 export const CREATED_HEADER = "X-Plat5-Audit-Created"
@@ -22,12 +20,7 @@ export const MAX_BYTES = 4096
 export type Details = Record<string, unknown>
 
 /** Records `field` when `from` and `to` differ. */
-export const changed = (
-  details: Details,
-  field: string,
-  from: unknown,
-  to: unknown
-): void => {
+export const changed = (details: Details, field: string, from: unknown, to: unknown): void => {
   if (from !== to) details[field] = { from, to }
 }
 
@@ -47,15 +40,15 @@ export const encode = (details: Details): string | null => {
 }
 
 /**
- * Puts `details` on the response. Empty sets nothing, so a write that changed nothing
- * sends no header. Over the cap sets nothing and notes it on the trace: the event still
+ * Puts `details` on the response. Empty sets nothing, so a write that changed nothing sends
+ * no header. Over the cap sets nothing and notes it on the request's span: the event still
  * records the request, just not the change.
  */
 export const setDetails = (reply: FastifyReply, details: Details): void => {
   if (Object.keys(details).length === 0) return
   const value = encode(details)
   if (value === null) {
-    trace.getSpan(traceContextOf(reply.request))?.addEvent("audit details not sent", {
+    reply.request.span?.addEvent("audit details not sent", {
       reason: `audit details are over ${MAX_BYTES} bytes`
     })
     return

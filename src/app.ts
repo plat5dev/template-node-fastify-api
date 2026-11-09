@@ -1,15 +1,23 @@
-import Fastify from "fastify"
-import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox"
 import swagger from "@fastify/swagger"
 import swaggerUi from "@fastify/swagger-ui"
-import type { AccessClient } from "./access.js"
-import { MAX_BODY_BYTES } from "./errors.js"
-import { registerObservability, sendError } from "./middleware/observability.js"
-import type { ProfilesStore } from "./profiles/store.js"
-import { registerProfileRoutes } from "./profiles/routes.js"
-import type { TasksStore } from "./tasks/store.js"
-import { registerTaskRoutes } from "./tasks/routes.js"
-import type { App } from "./types.js"
+import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox"
+import Fastify, { type FastifyError, type FastifyReply, type FastifyRequest } from "fastify"
+import type { AccessClient } from "./access.ts"
+import { ApiError, internalError, invalidRequest, notFound } from "./errors.ts"
+import { registerObservability, requestIdOf } from "./observability.ts"
+import { profileRoutes } from "./profiles/routes.ts"
+import type { ProfilesStore } from "./profiles/store.ts"
+import type { Messages } from "./schemas.ts"
+import { taskRoutes } from "./tasks/routes.ts"
+import type { TasksStore } from "./tasks/store.ts"
+import { validationFailed } from "./validation.ts"
+
+declare module "fastify" {
+  interface FastifyContextConfig {
+    /** The sentences for the route's fields, when its request doesn't match its schema. */
+    messages?: Messages
+  }
+}
 
 export type AppDeps = {
   tasks: TasksStore
@@ -17,47 +25,88 @@ export type AppDeps = {
   access: AccessClient
   /** The permission a task's assignee needs on its project. */
   assigneePermission: string
-  /** The OpenAPI at /docs, with this version. Unset: no /docs. */
-  docsVersion?: string
+  /** The API's version, in its OpenAPI document. */
+  version: string
 }
 
 /**
- * The public API. Bodies are read by the routes that take one (body.ts): every body is
- * kept as raw bytes up to 1 MiB, and schemas describe the API for the OpenAPI but don't
- * validate, so every answer is the API's own, in the Plat5 envelope.
+ * Any error as the API's (plat5 docs/reference/errors.md): its own as they are; a request
+ * that doesn't match its route's schema a 422; one Fastify couldn't read (a body not sent as
+ * `application/json`, empty, or not JSON) a 400; anything else the fallback 500. Never a
+ * framework's text in the message.
  */
-export const buildApp = async (deps: AppDeps): Promise<App> => {
+const toApiError = (err: FastifyError, req: FastifyRequest): ApiError => {
+  if (err instanceof ApiError) return err
+  if (err.validation) {
+    return validationFailed(
+      err.validation,
+      err.validationContext,
+      req.body,
+      req.routeOptions.config.messages
+    )
+  }
+  const status = err.statusCode ?? 500
+  return status >= 400 && status < 500 ? invalidRequest() : internalError()
+}
+
+const send = (reply: FastifyReply, answer: ApiError) =>
+  reply.status(answer.status).send(answer.envelope(requestIdOf(reply.request)))
+
+/**
+ * The public API. A body is JSON, sent as `application/json` (any parameters), and checked
+ * against its route's schema: AJV without type coercion, a body's unknown keys refused, every
+ * wrong field reported. Every answer is the API's own, in the Plat5 envelope.
+ */
+export const buildApp = async (deps: AppDeps) => {
   const app = Fastify({
     logger: false,
-    // No CORS: the gateway owns it (plat5 docs/guides/write-a-service.md)
-    trustProxy: true,
-    bodyLimit: MAX_BODY_BYTES,
     routerOptions: { ignoreTrailingSlash: true },
+    ajv: { customOptions: { coerceTypes: false, removeAdditional: false, allErrors: true } },
     // A URL Fastify can't decode: the envelope, never Fastify's text.
-    frameworkErrors: (err, req, reply) => sendError(err, req, reply)
+    frameworkErrors: (_err, _req, reply) => send(reply, invalidRequest())
   }).withTypeProvider<TypeBoxTypeProvider>()
 
-  app.removeAllContentTypeParsers()
-  app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => done(null, body))
-  app.setValidatorCompiler(() => () => true)
+  // JSON is the only body: anything else is Fastify's 415, answered as a 400.
+  app.removeContentTypeParser("text/plain")
 
   registerObservability(app)
 
-  if (deps.docsVersion !== undefined) {
-    await app.register(swagger, {
-      openapi: {
-        info: {
-          title: "Plat5 API",
-          description: "Reference Node + Fastify business service for Plat5",
-          version: deps.docsVersion
-        }
-      }
-    })
-    await app.register(swaggerUi, { routePrefix: "/docs" })
-  }
+  // A route that takes a body answers 400 when none is sent.
+  app.addHook("preValidation", async (req) => {
+    if (req.routeOptions.schema?.body !== undefined && req.body === undefined)
+      throw invalidRequest()
+  })
 
-  registerProfileRoutes(app, deps.profiles)
-  registerTaskRoutes(app, deps.tasks, deps.access, deps.assigneePermission)
+  app.setErrorHandler((err: FastifyError, req, reply) => {
+    const answer = toApiError(err, req)
+    req.failure = { answer, cause: answer === err ? undefined : err }
+    if (answer.status >= 500) req.span?.recordException(err)
+    return send(reply, answer)
+  })
+
+  // An unknown route, or a known path in a method it doesn't serve: the same 404 either way.
+  app.setNotFoundHandler((_req, reply) => send(reply, notFound("resource", null)))
+
+  await app.register(swagger, {
+    openapi: {
+      info: {
+        title: "Plat5 API",
+        description: "Reference Node + Fastify business service for Plat5",
+        version: deps.version
+      }
+    }
+  })
+  await app.register(swaggerUi, { routePrefix: "/docs" })
+  app.get("/openapi.json", { schema: { hide: true } }, async () => app.swagger())
+
+  await app.register(profileRoutes, { store: deps.profiles })
+  await app.register(taskRoutes, {
+    store: deps.tasks,
+    access: deps.access,
+    assigneePermission: deps.assigneePermission
+  })
   await app.ready()
   return app
 }
+
+export type App = Awaited<ReturnType<typeof buildApp>>

@@ -6,7 +6,8 @@
  * docs/reference/api/internal.md#access-evaluation). Only a 200 with a boolean `decision`
  * is an answer. Anything else is an error, logged with the request id, and no answer is no.
  */
-import { propagation, type Context } from "@opentelemetry/api"
+import { type Context, propagation } from "@opentelemetry/api"
+import { log, messageOf } from "./log.ts"
 
 /** Whether the member `memberId` holds `permission` on the node `nodeId` of kind `kind`. */
 export type Question = {
@@ -16,44 +17,23 @@ export type Question = {
   permission: string
 }
 
-export class AccessClient {
+export type AccessClient = {
   /**
-   * Asks identity at `identityUrl`, its internal base URL. Unset, every question fails:
-   * there's no one to ask.
+   * Identity's decision. `parent` is the request's trace context, sent as `traceparent`, and
+   * `requestId` its `X-Request-ID`, sent to identity and logged with a failure. Throws when
+   * identity doesn't answer.
    */
-  constructor(private readonly identityUrl: string | undefined) {}
+  evaluate: (parent: Context, requestId: string | null, question: Question) => Promise<boolean>
+}
 
-  /**
-   * Identity's decision. `parent` is the request's trace context, sent as `traceparent`,
-   * and `requestId` its `X-Request-ID`, sent to identity and logged with a failure. Throws
-   * when identity doesn't answer.
-   */
-  async evaluate(parent: Context, requestId: string, question: Question): Promise<boolean> {
-    try {
-      return await this.ask(parent, requestId, question)
-    } catch (err) {
-      console.log(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: "error",
-          message: "access evaluation failed",
-          component: "access",
-          request_id: requestId,
-          error_message: err instanceof Error ? err.message : String(err)
-        })
-      )
-      throw err
-    }
-  }
-
-  private async ask(parent: Context, requestId: string, q: Question): Promise<boolean> {
-    if (this.identityUrl === undefined) throw new Error("IDENTITY_INTERNAL_URL is unset")
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "X-Request-ID": requestId
-    }
+/** Asks identity at `identityUrl`, its internal base URL. Unset, every question fails: there's no one to ask. */
+export const accessClient = (identityUrl: string | undefined): AccessClient => {
+  const ask = async (parent: Context, requestId: string | null, q: Question): Promise<boolean> => {
+    if (identityUrl === undefined) throw new Error("IDENTITY_INTERNAL_URL is unset")
+    const headers: Record<string, string> = { "content-type": "application/json" }
+    if (requestId !== null) headers["x-request-id"] = requestId
     propagation.inject(parent, headers)
-    const res = await fetch(`${this.identityUrl}/access/v1/evaluation`, {
+    const res = await fetch(`${identityUrl}/access/v1/evaluation`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -63,11 +43,28 @@ export class AccessClient {
       }),
       signal: AbortSignal.timeout(10_000)
     })
-    if (res.status !== 200) throw new Error(`access evaluation answered ${res.status}`)
-    const answer = (await res.json()) as { decision?: unknown } | null
-    if (typeof answer?.decision !== "boolean") {
-      throw new Error("access evaluation answered without a decision")
+    if (res.status !== 200) {
+      await res.body?.cancel()
+      throw new Error(`access evaluation answered ${res.status}`)
     }
+    const answer = (await res.json()) as { decision?: unknown } | null
+    if (typeof answer?.decision !== "boolean")
+      throw new Error("access evaluation answered without a decision")
     return answer.decision
+  }
+
+  return {
+    evaluate: async (parent, requestId, question) => {
+      try {
+        return await ask(parent, requestId, question)
+      } catch (err) {
+        log("error", "access evaluation failed", {
+          component: "access",
+          request_id: requestId,
+          error_message: messageOf(err)
+        })
+        throw err
+      }
+    }
   }
 }

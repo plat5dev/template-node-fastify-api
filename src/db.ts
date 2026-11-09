@@ -1,16 +1,14 @@
-import Database from "better-sqlite3"
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
-import { recordDbOperation } from "./metrics.js"
+import { DatabaseSync } from "node:sqlite"
+import { recordDbOperation } from "./metrics.ts"
 
-export type Db = Database.Database
+export type Db = DatabaseSync
 
 export const connect = (databasePath: string): Db => {
-  mkdirSync(dirname(databasePath), { recursive: true })
-  const db = new Database(databasePath)
-  db.pragma("journal_mode = WAL")
-  db.pragma("foreign_keys = ON")
-  db.pragma("busy_timeout = 5000")
+  if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true })
+  const db = new DatabaseSync(databasePath, { timeout: 5000 })
+  db.exec("PRAGMA journal_mode = WAL")
   return db
 }
 
@@ -47,14 +45,28 @@ export const migrate = (db: Db): void => {
   `)
 }
 
+/** Runs `fn` as the database operation `operation`, timed and counted. */
 export const trackDb = <T>(operation: string, fn: () => T): T => {
   const started = performance.now()
+  let failed = true
   try {
     const result = fn()
-    recordDbOperation(operation, (performance.now() - started) / 1000, null)
+    failed = false
+    return result
+  } finally {
+    recordDbOperation(operation, (performance.now() - started) / 1000, failed)
+  }
+}
+
+/** Runs `fn` in one transaction: it commits when `fn` returns, and rolls back when it throws. */
+export const transaction = <T>(db: Db, fn: () => T): T => {
+  db.exec("BEGIN IMMEDIATE")
+  try {
+    const result = fn()
+    db.exec("COMMIT")
     return result
   } catch (err) {
-    recordDbOperation(operation, (performance.now() - started) / 1000, err)
+    db.exec("ROLLBACK")
     throw err
   }
 }

@@ -4,9 +4,9 @@ import assert from "node:assert/strict"
 import { createServer, type IncomingHttpHeaders } from "node:http"
 import type { AddressInfo } from "node:net"
 import { test, type TestContext } from "node:test"
-import { AccessClient, type Question } from "./access.js"
+import { accessClient, type Question } from "./access.ts"
 
-// initTelemetry's propagator when nothing exports traces.
+// initTelemetry's propagator.
 propagation.setGlobalPropagator(new W3CTraceContextPropagator())
 
 const member = "01jd8x3k7q00000000000000mm"
@@ -46,7 +46,7 @@ for (const decision of [true, false]) {
       isRemote: true
     })
 
-    const got = await new AccessClient(identity.url).evaluate(parent, "req-1", question)
+    const got = await accessClient(identity.url).evaluate(parent, "req-1", question)
     assert.equal(got, decision)
     assert.deepEqual(identity.got.body, {
       subject: { type: "member", id: member },
@@ -72,9 +72,7 @@ for (const [name, status, body] of [
   test(`no answer is an error: ${name}`, async (t) => {
     const logs = t.mock.method(console, "log", () => {})
     const identity = await serveIdentity(t, status, body)
-    await assert.rejects(
-      new AccessClient(identity.url).evaluate(ROOT_CONTEXT, "req-1", question)
-    )
+    await assert.rejects(accessClient(identity.url).evaluate(ROOT_CONTEXT, "req-1", question))
     // Logged with the request id.
     const line = JSON.parse(String(logs.mock.calls[0]?.arguments[0]))
     assert.equal(line.message, "access evaluation failed")
@@ -89,9 +87,15 @@ test("no answer is an error: identity unreachable or unset", async (t) => {
   const { port } = closed.address() as AddressInfo
   await new Promise((resolve) => closed.close(resolve))
   await assert.rejects(
-    new AccessClient(`http://127.0.0.1:${port}`).evaluate(ROOT_CONTEXT, "", question)
+    accessClient(`http://127.0.0.1:${port}`).evaluate(ROOT_CONTEXT, null, question)
   )
-  await assert.rejects(new AccessClient(undefined).evaluate(ROOT_CONTEXT, "", question), {
+  await assert.rejects(accessClient(undefined).evaluate(ROOT_CONTEXT, null, question), {
     message: "IDENTITY_INTERNAL_URL is unset"
   })
+})
+
+test("without a request id, none is sent", async (t) => {
+  const identity = await serveIdentity(t, 200, `{"decision":true}`)
+  assert.equal(await accessClient(identity.url).evaluate(ROOT_CONTEXT, null, question), true)
+  assert.equal(identity.got.headers?.["x-request-id"], undefined)
 })

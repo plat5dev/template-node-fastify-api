@@ -1,6 +1,6 @@
 # Node + Fastify API starter
 
-A Plat5 API starter: **Node.js** + **pnpm**, **Fastify**, **TypeBox**, SQLite via **better-sqlite3**, Prometheus + OTel. It serves tasks inside a project, and the person's own profile. The repo is a Plat5 project you can run as is: `plat5 start` in this directory runs Plat5, applies `plat5.yml`, and runs the API beside it.
+A Plat5 API starter: **Node.js** running TypeScript as it is, **Fastify** with **TypeBox** schemas, SQLite via `node:sqlite`, Prometheus + OpenTelemetry. It serves tasks inside a project, and the person's own profile. The repo is a Plat5 project you can run as is: `plat5 start` in this directory runs Plat5, applies `plat5.yml`, and runs the API beside it.
 
 Plat5 decides who may call what, at its gateway. This service owns business logic only: it reads the node ids and the caller's member id the front door gives it, and checks nothing about the caller ([plat5 `docs/guides/write-a-service.md`](https://github.com/plat5dev/plat5/blob/master/docs/guides/write-a-service.md)).
 
@@ -8,14 +8,23 @@ Plat5 decides who may call what, at its gateway. This service owns business logi
 
 | Piece | Choice |
 |-------|--------|
-| Runtime / installs | Node 22+ / pnpm |
-| HTTP | Fastify 5 |
-| Schema | TypeBox, describing the API for `@fastify/swagger`'s OpenAPI at `/docs`; bodies are checked by hand (`src/body.ts`), so every answer is the API's own |
-| DB | SQLite via `better-sqlite3` |
-| Dev | `tsx watch` |
-| Prod | `tsc` → `node dist/main.js` |
-| Tests | `node:test` via `tsx --test`, Fastify's `inject`, identity faked by a local HTTP server |
+| Runtime / installs | Node 26 (LTS) / npm. Node runs the `.ts` files as they are, stripping their types: no build step |
+| HTTP | Fastify 5: content-type parsers, hooks, `setErrorHandler`, `setNotFoundHandler` |
+| Schema | TypeBox via `@fastify/type-provider-typebox`. Fastify's AJV validates each request against its route's schemas (no type coercion, a body's unknown keys refused, every wrong field reported); `src/validation.ts` turns what fails into Plat5's 422. The same schemas are the OpenAPI document (`@fastify/swagger`: Swagger UI at `/docs`, the document at `/openapi.json`) |
+| DB | SQLite via Node's own `node:sqlite` |
+| Telemetry | OpenTelemetry: one meter for every series, read by the Prometheus exporter for `/metrics` and pushed over OTLP when that's on; traces over OTLP |
+| Dev | `node --watch` |
+| Tests | `node --test`, Fastify's `inject`, identity faked by a local HTTP server |
 | IDs | ULID, lowercase |
+
+| Dependency | For |
+|------------|-----|
+| `fastify`, `@fastify/type-provider-typebox`, `typebox` | HTTP, schemas, validation |
+| `@fastify/swagger`, `@fastify/swagger-ui` | The OpenAPI document, and `/docs` |
+| `ulid` | Task ids, monotonic |
+| `@opentelemetry/api`, `core`, `resources`, `sdk-trace`, `sdk-metrics` | Spans, series, the resource, W3C Trace Context |
+| `@opentelemetry/exporter-prometheus`, `exporter-metrics-otlp-http`, `exporter-trace-otlp-http` | `/metrics`, and the OTLP pushes |
+| `typescript`, `@types/node` (dev) | `npm run check` |
 
 ## What it serves
 
@@ -40,7 +49,16 @@ A task is authored: `created_by` is the member id of whoever created it, and sta
 
 Ids are lowercase ULIDs with no prefix, like every Plat5 id.
 
-Request bodies match keys exactly; an unknown field is a **422** naming it. `{"Title": …}` isn't `title`: each unknown field is in `details.fields` once, in the body's order, as `{"path": "Title", "message": "Title isn't a field."}`, and the first one's sentence is the `message`. A nested field's path is `address.street`, an array item's `tags[0].name`. A body with an unknown field is refused before its values are checked.
+A write's body is JSON: not sent as `application/json` (any parameters, the type in any case; `application/merge-patch+json` isn't it), empty, or not JSON is a **400** `INVALID_REQUEST`, as is a create without `X-Plat5-Member-Id`, checked before the body is read ([plat5 `docs/reference/errors.md`](https://github.com/plat5dev/plat5/blob/master/docs/reference/errors.md#which-status)). Its values are checked by its schema (`src/schemas.ts`), never coerced: each wrong one is in a **422**'s `details.fields`, once, at its path (`title`, `address.street`, `tags[0].name`; the body itself, an array say, is `body`), in the body's order, with its sentence, and the first one's sentence is the `message`. Keys match exactly: `{"Title": …}` isn't `title`, and a body with an unknown key is refused for those alone, before its values are checked, each `{"path": "Title", "message": "Title isn't a field."}`. A `DELETE` reads no body.
+
+| Field | Rule | Sentence |
+|-------|------|----------|
+| `title` | Trimmed of white space, then 1 to 255 characters (code points). Required on a create; on a `PATCH`, absent or `null` leaves it | `Title is required.`, `Title is too long.`; another type, or `null` on a create: `That doesn't look right.` |
+| `status` | `todo`, `in_progress` or `done`. A create without one is `todo`; on a `PATCH`, absent or `null` leaves it | `Status must be todo, in progress, or done.`, for any wrong value or type |
+| `assignee_id` | A lowercase ULID, or `null` for none ([Checking an assignee](#checking-an-assignee)) | `That doesn't look right.` |
+| `bio` | Required, at most 2000 characters, kept as sent (not trimmed; `""` is a bio) | `Bio is required.`, `Bio is too long.`; another type or `null`: `That doesn't look right.` |
+
+Times are RFC 3339 in UTC, to the millisecond (`2026-10-28T00:00:00.100Z`). A profile is made, empty, on the person's first call.
 
 ## The config
 
@@ -52,7 +70,7 @@ Request bodies match keys exactly; an unknown field is a **422** naming it. `{"T
 | `plat5.dev.yml` | How `plat5 start` runs the project on your machine: image versions, modules, and `app.compose` |
 | `docker-compose.yml` | The API's container, `api`, on port 3000 |
 | `routes.operator.yml` | What the operator plane may call on this API: the read routes, by project id (operator `docs/reference/routes.md`) |
-| `plat5.template.yml` | The starter's manifest for `plat5 init`: its service file, operator routes, compose file and next steps |
+| `plat5.template.yml` | The starter's manifest for `plat5 init`: its config, operator routes, compose file and next steps |
 
 In a project made with `plat5 init --template node-fastify-api`, this API sits in `api/`, its service file is the project's `services/api.yml`, its operator routes are in the project's `operator.routes.yml`, and the project has its own `plat5.yml` and `plat5.dev.yml` at its root.
 
@@ -68,7 +86,7 @@ Only front doors may reach the API: Plat5's gateway, an operator plane, anything
 | `X-Request-ID` | The front door | Every request: logged, and in error bodies. Never set on a response |
 | `traceparent` | The front door | Every request: the server span's parent |
 
-The gateway also sends `X-Plat5-Project-Id`, `X-Plat5-Organization-Id` and `X-Plat5-User-Id`; the API reads the project's and the user's ids from the path, and has no use for the organization's. It never sees `Authorization`, a slug, a principal id, or the caller's permissions or role ([plat5 `docs/reference/headers.md`](https://github.com/plat5dev/plat5/blob/master/docs/reference/headers.md)).
+The gateway also sends `X-Plat5-Project-Id`, `X-Plat5-Organization-Id` and `X-Plat5-User-Id`; the API reads the project's and the user's ids from the path, logs the project's and the user's from their headers, and has no use for the organization's. A body's size is the gateway's to limit (`max_body_bytes`). It never sees `Authorization`, a slug, a principal id, or the caller's permissions or role ([plat5 `docs/reference/headers.md`](https://github.com/plat5dev/plat5/blob/master/docs/reference/headers.md)).
 
 Every lookup is scoped by the project id in the path, and nothing checks that the project exists or that the caller may act: the front door decided. A task id under another project is **404**.
 
@@ -122,12 +140,12 @@ It logs `following the lifecycle log from its first event`, then each page it re
 
 ## Lists
 
-The task list pages like every Plat5 list ([plat5 `docs/reference/lists.md`](https://github.com/plat5dev/plat5/blob/master/docs/reference/lists.md)). `src/pagination.ts` reads the params.
+The task list pages like every Plat5 list ([plat5 `docs/reference/lists.md`](https://github.com/plat5dev/plat5/blob/master/docs/reference/lists.md)). `src/pagination.ts` is their schema.
 
 | | |
 |---|---|
-| `limit` | Default 50, max 100. Over the max is clamped. Under 1 or not a number → **422** |
-| `starting_after` | The `id` of the last item on the previous page. Not a lowercase ULID → **422** |
+| `limit` | Default 50, max 100. Over the max is clamped. Under 1 or not a whole number (digits only) → **422** |
+| `starting_after` | The `id` of the last item on the previous page. Not a lowercase ULID → **422**; both wrong, both are named, `limit` first |
 | Answer | `{"tasks": [...], "has_more": false}`, in `id` order (oldest first) |
 
 ## Audit details
@@ -168,8 +186,8 @@ To run the API on your own machine instead (your debugger, your editor's runner)
 
 ```bash
 plat5 start -x app
-pnpm install
-TASK_ASSIGNEE_PERMISSION=project:read pnpm run dev
+npm install
+TASK_ASSIGNEE_PERMISSION=project:read npm run dev
 ```
 
 `-x app` runs everything but the API, and points the gateway's `api` at your machine, so the API must listen on port 3000. Identity's internal port isn't published there, so in this mode the lifecycle log isn't read and a task with an assignee is a **503**.
@@ -180,7 +198,7 @@ TASK_ASSIGNEE_PERMISSION=project:read pnpm run dev
 
 A `GET …/stats` for a project, end to end.
 
-**1. Add the handler.** `src/stats/routes.ts` with a route on `/projects/:project_id/stats`, registered in `src/main.ts` beside `registerTaskRoutes` (copy `src/tasks/`). Read `req.params.project_id`. Don't check who called: the front door did, and the path is the answer.
+**1. Add the handler.** A plugin in `src/stats/routes.ts` with a route on `/projects/:project_id/stats`, registered in `src/app.ts` beside `taskRoutes` (copy `src/tasks/`). Give it a `schema` (`params`, and a `querystring` or `body` if it takes one: TypeBox, as in `src/schemas.ts`), and read `req.params.project_id`. Don't check who called: the front door did, and the path is the answer. Throw the errors in `src/errors.ts`; a body's sentences go in the route's `config.messages`.
 
 **2. Route it.** Add it to `services/api.yml`, in the `project` scope. The path is relative to the project; `upstream_prefix` makes its upstream `/projects/{project.id}/stats`:
 
@@ -203,11 +221,10 @@ A `GET …/stats` for a project, end to end.
 ## Commands
 
 ```bash
-TASK_ASSIGNEE_PERMISSION=project:read pnpm run dev    # tsx watch src/main.ts
-pnpm run build                                        # tsc → dist/
-TASK_ASSIGNEE_PERMISSION=project:read pnpm run start  # node dist/main.js
-pnpm run check                                        # tsc --noEmit
-pnpm test                                             # node:test, via tsx
+TASK_ASSIGNEE_PERMISSION=project:read npm run dev    # node --watch, reading .env if there is one
+TASK_ASSIGNEE_PERMISSION=project:read npm start      # node src/main.ts
+npm run check                                        # tsc: types only
+npm test                                             # node --test
 ```
 
 ## Ports
@@ -219,11 +236,11 @@ pnpm test                                             # node:test, via tsx
 
 ## Environment
 
-See `.env.example`. `dotenv` loads `.env` automatically.
+See `.env.example`. `npm run dev` reads `.env` (`node --env-file-if-exists`); `npm start` reads only the environment.
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `PORT` | `3000` | Public |
+| `PORT` | `3000` | Public. Not a port number → the API exits at boot |
 | `INTERNAL_PORT` | `3001` | Health + `/metrics` |
 | `DATABASE_PATH` | `./data/app.db` | SQLite file |
 | `IDENTITY_INTERNAL_URL` | unset | Identity's internal base URL, for its lifecycle log and the assignee check. The compose file sets `http://identity:3001`. Unset → the log isn't read, and a task with an assignee is a **503** |
@@ -254,47 +271,49 @@ Contract: Plat5 [`docs/reference/telemetry.md`](https://github.com/plat5dev/plat
 | Signal | Path |
 |--------|------|
 | Logs | JSON stdout; access line per request, with `request_id`, and `node_id` and `member_id` on task routes or `user_id` on the profile ([logs](https://github.com/plat5dev/plat5/blob/master/docs/reference/telemetry.md#logs)) |
-| Metrics scrape | Prometheus `/metrics` on `INTERNAL_PORT` |
-| Traces | OTLP HTTP when endpoint set (default); W3C Trace Context only, `traceparent` in and on to identity; HTTP server spans as [the contract](https://github.com/plat5dev/plat5/blob/master/docs/reference/telemetry.md#http-server-spans) has them, `src/middleware/redact.ts` redacting `url.query`; the same ids as `plat5.node_id`, `plat5.member_id`, `plat5.user_id` |
-| Metrics OTLP | On when endpoint set (default); set `OTEL_METRICS_EXPORTER=prometheus` to opt out |
+| Metrics scrape | Prometheus `/metrics` on `INTERNAL_PORT`: the HTTP, DB and process series, each written once to the OpenTelemetry meter (`src/metrics.ts`) |
+| Traces | OTLP HTTP when endpoint set (default); W3C Trace Context, `traceparent` in and on to identity; HTTP server spans as [the contract](https://github.com/plat5dev/plat5/blob/master/docs/reference/telemetry.md#http-server-spans) has them (`src/observability.ts`: `{method} {route}`, `Error` on a 5xx only), `src/redact.ts` redacting `url.query`; the same ids as `plat5.node_id`, `plat5.member_id`, `plat5.user_id` |
+| Metrics OTLP | On when endpoint set (default): the same series, process ones included; set `OTEL_METRICS_EXPORTER=prometheus` to opt out |
 
 ```bash
 # traces and metrics pushed: don't also scrape /metrics into the same backend
-OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 pnpm run dev
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 npm run dev
 
 # traces pushed, metrics scraped (no double count)
-OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 OTEL_METRICS_EXPORTER=prometheus pnpm run dev
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 OTEL_METRICS_EXPORTER=prometheus npm run dev
 ```
 
 Under `plat5 start`, the compose file gets `OTEL_EXPORTER_OTLP_ENDPOINT` from the CLI when the observability module is on. Running on your own machine, set it yourself. Without it there's no OTLP: stdout logs and `/metrics` only, and the request's `traceparent` still goes on to identity.
 
 An export that fails, the collector unreachable say, is an `error` line, `telemetry error` with the cause in `error_message`, each time it fails; the API keeps serving ([invalid values](https://github.com/plat5dev/plat5/blob/master/docs/reference/telemetry.md#invalid-values)).
 
-Health and `/metrics` are on the internal server (not OTel-instrumented).
+Health and `/metrics` are on the internal server, not traced.
 
 ## Layout
 
 ```
 src/
-  main.ts              # dual listen: public + internal; starts the lifecycle reader
-  app.ts               # the public API: Fastify, raw bodies, routes
+  main.ts              # public + internal servers, SQLite, the lifecycle reader
+  app.ts               # the public API: Fastify, its JSON parser, error and 404 handlers, OpenAPI, routes
+  schemas.ts           # TypeBox schemas, each field's sentences
+  validation.ts        # what fails a schema, as Plat5's 422
+  observability.ts     # each request's span, metrics and log line
   internal.ts          # the internal port: health, /metrics
   config.ts            # env → AppConfig, the OTel resource among it
+  telemetry.ts         # OpenTelemetry: the meter's readers, the tracer, the propagator
+  metrics.ts           # the HTTP, DB and process series
   version.ts           # service.version: the build's VERSION, written by the Dockerfile; dev without one
-  db.ts                # better-sqlite3 open + schema
+  db.ts                # node:sqlite open + schema, timed operations, transactions
   errors.ts            # Plat5 error envelope
-  body.ts              # a JSON request body, keys matched exactly, or a 422
-  clock.ts             # timestamps, RFC 3339 UTC
   audit.ts             # X-Plat5-Audit-Details / -Created
   pagination.ts        # limit, starting_after, has_more
   lifecycle.ts         # identity's lifecycle log: purged projects, deleted accounts
   access.ts            # identity's access evaluation: assignees
-  metrics.ts           # prom-client scrape + HTTP/DB metrics
-  telemetry.ts         # OTel SDK (exporter matrix)
-  middleware/          # access log, spans, error handler, url.query redaction
-  schemas/             # TypeBox models, for the OpenAPI (routes validate by hand)
+  redact.ts            # url.query redaction
+  log.ts               # a JSON log line
   profiles/ tasks/     # the API: routes + store
   *.test.ts            # tests, beside what they test
+  testing.ts           # for tests: the API on an in-memory database, a fake identity
 plat5.yml services/    # the deployment's config
 plat5.dev.yml          # plat5 start
 routes.operator.yml    # the operator plane's routes on this API
@@ -309,4 +328,4 @@ docker build --target prod --build-arg VERSION=v1.2.3 -t api .   # service.versi
 ```
 
 - `local` target: hot reload, source mount
-- `prod` target: non-root, `tsc` build + pruned deps
+- `prod` target: non-root, `npm ci --omit=dev`, the TypeScript run as it is
