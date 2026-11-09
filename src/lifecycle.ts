@@ -7,7 +7,9 @@
  * event. `user.deleted` deletes that person's profile. Tasks are authored, so
  * `member.removed` keeps them. One cursor, the last event id acted on, is kept in SQLite
  * with the data it cleans up, and saved in the same transaction as a page's deletes. Acting
- * again on the same event changes nothing, so the log can be replayed by resetting it.
+ * again on the same event changes nothing, so the log can be replayed by resetting it, and a
+ * cursor past the log's newest event (identity's log was reset) is cleared and the log read
+ * again from its first event.
  */
 import { setTimeout as sleep } from "node:timers/promises"
 import { type Db, trackDb, transaction } from "./db.ts"
@@ -49,12 +51,12 @@ export const decodePage = (page: unknown): Event[] => {
   })
 }
 
-const note = (level: "info" | "error", message: string, fields: Record<string, unknown> = {}) =>
+const note = (level: "info" | "warn" | "error", message: string, fields: Record<string, unknown> = {}) =>
   log(level, message, { component: "lifecycle", ...fields })
 
 /**
  * The log's reader on `identityUrl`, identity's internal base URL. `retryMs` is the wait after
- * an error, or after an immediate answer with no events.
+ * an error.
  */
 export const lifecycleReader = (opts: {
   identityUrl: string
@@ -68,6 +70,7 @@ export const lifecycleReader = (opts: {
   const saveCursor = db.prepare(
     `INSERT INTO feed_cursors (id, event_id) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET event_id = excluded.event_id`
   )
+  const clearCursor = db.prepare(`DELETE FROM feed_cursors`)
 
   /** The last event id acted on, or "" before the first. */
   const cursor = (): string =>
@@ -90,37 +93,43 @@ export const lifecycleReader = (opts: {
   }
 
   /**
-   * Asks for the events after `after`, or from the first event when there's none yet. With a
-   * cursor identity waits for one; its 204 is no events, and `waited`.
+   * Asks for the events after `after`, or from the first event when there's none yet. Identity
+   * waits for one; its 204 is no events. A 409 `CURSOR_AHEAD` is `ahead`: `after` is past the
+   * log's newest event.
    */
-  const fetchPage = async (
-    after: string,
-    signal?: AbortSignal
-  ): Promise<{ events: Event[]; waited: boolean }> => {
+  const fetchPage = async (after: string, signal?: AbortSignal): Promise<Event[] | "ahead"> => {
     const query = new URLSearchParams({ types: TYPES, limit: String(PAGE_SIZE) })
     if (after) query.set("after", after)
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     const res = await fetch(`${identityUrl}/internal/events?${query}`, {
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout
     })
-    if (res.status !== 200) {
-      await res.body?.cancel()
-      if (res.status === 204) return { events: [], waited: true }
-      throw new Error(`lifecycle log answered ${res.status}`)
-    }
-    return { events: decodePage(await res.json()), waited: false }
+    if (res.status === 200) return decodePage(await res.json())
+    if (res.status === 409) {
+      const body = (await res.json().catch(() => null)) as { error?: { code?: unknown } } | null
+      if (body?.error?.code === "CURSOR_AHEAD") return "ahead"
+    } else await res.body?.cancel()
+    if (res.status === 204) return []
+    throw new Error(`lifecycle log answered ${res.status}`)
   }
 
   /**
    * Asks once for the events after the saved cursor, acts on them, and saves the cursor past
-   * them in the same transaction as their deletes. Answers whether to ask again at once: after
-   * a page of events, or a 204 (identity waited and nothing came).
+   * them in the same transaction as their deletes. A cursor past the log's newest event is
+   * cleared, so the next ask reads from the first event.
    */
-  const step = async (signal?: AbortSignal): Promise<boolean> => {
+  const step = async (signal?: AbortSignal): Promise<void> => {
     const after = cursor()
-    const { events, waited } = await fetchPage(after, signal)
+    const events = await fetchPage(after, signal)
+    if (events === "ahead") {
+      trackDb("feed_cursors.clear", () => clearCursor.run())
+      note("warn", "the lifecycle log was reset: reading it again from its first event", {
+        cursor: after
+      })
+      return
+    }
     const last = events.at(-1)
-    if (last === undefined) return waited
+    if (last === undefined) return
     transaction(db, () => {
       for (const event of events) {
         try {
@@ -132,14 +141,12 @@ export const lifecycleReader = (opts: {
       trackDb("feed_cursors.save", () => saveCursor.run(last.id))
     })
     note("info", "lifecycle page read", { events: events.length, after, cursor: last.id })
-    return true
   }
 
   /**
-   * Follows the log until `signal` aborts, which also cancels a read in flight. After a page
-   * or a 204 it asks again at once; after an error it logs it and asks again after `retryMs`,
-   * from the same cursor. An immediate answer with no events (an empty log, or a cursor past
-   * identity's newest event) is also asked again after `retryMs`, not in a tight loop.
+   * Follows the log until `signal` aborts, which also cancels a read in flight. After a page,
+   * a 204 or a reset it asks again at once; after an error it logs it and asks again after
+   * `retryMs`, from the same cursor.
    */
   const run = async (signal: AbortSignal): Promise<void> => {
     try {
@@ -150,17 +157,16 @@ export const lifecycleReader = (opts: {
       // The first step fails the same way, and logs it.
     }
     while (!signal.aborted) {
-      let again = false
       try {
-        again = await step(signal)
+        await step(signal)
       } catch (err) {
         if (signal.aborted) break
         note("error", "lifecycle read failed", {
           error_message: messageOf(err),
           retry_in_ms: retryMs
         })
+        await sleep(retryMs, undefined, { signal }).catch(() => {})
       }
-      if (!again) await sleep(retryMs, undefined, { signal }).catch(() => {})
     }
   }
 

@@ -16,11 +16,21 @@ const fresh = "01jd8x3k7q00000000000000u3"
 
 type Served = Event & { type: string }
 
+const cursorAhead = {
+  error: {
+    type: "invalid_request_error",
+    code: "CURSOR_AHEAD",
+    message: "The log has no event at this cursor. Read from its first event.",
+    request_id: null,
+    details: null
+  }
+}
+
 /**
  * Identity, serving the one lifecycle log at /internal/events as identity does: types
- * filters, two events to a page, no after is answered at once, and with after it waits for
- * a matching event up to `wait`, then answers 204. The first requests answer `fail`'s
- * statuses, one each.
+ * filters, two events to a page, an after past the newest event is a 409 CURSOR_AHEAD, and
+ * otherwise it waits for a matching event up to `wait`, then answers 204. The first requests
+ * answer `fail`'s statuses, one each.
  */
 class Identity {
   wait = 50
@@ -67,9 +77,13 @@ class Identity {
       this.limits.push(url.searchParams.get("limit") ?? "")
       const failure = this.fail.shift()
       if (failure !== undefined) return res.writeHead(failure).end()
+      if (Number(after) > Math.max(0, ...this.events.map((e) => Number(e.id)))) {
+        res.writeHead(409, { "content-type": "application/json" })
+        return res.end(JSON.stringify(cursorAhead))
+      }
       let page = this.page(after, types)
       const deadline = performance.now() + this.wait
-      while (after !== "" && page.events.length === 0) {
+      while (page.events.length === 0) {
         const left = deadline - performance.now()
         const outcome = await new Promise<"added" | "timeout" | "closed">((resolve) => {
           const done = (outcome: "added" | "timeout" | "closed") => {
@@ -202,7 +216,7 @@ test("acts on each page and advances the cursor", async (t) => {
 
   // No cursor yet: from the first event, then from each page's last id.
   for (let i = 0; i < 2; i++) {
-    assert.equal(await s.consumer.step(), true, "a page should be followed at once by another ask")
+    await s.consumer.step()
   }
   s.checkActed()
   assert.equal(s.cursor(), "13")
@@ -219,7 +233,7 @@ test("a 204 is asked again at once", async (t) => {
   await s.consumer.step()
 
   // At the head: identity waits, answers 204, and nothing changes.
-  assert.equal(await s.consumer.step(), true, "a 204 should be followed at once by another ask")
+  await s.consumer.step()
   assert.equal(s.cursor(), "13")
   assert.equal(identity.asked.at(-1), "13")
 })
@@ -265,16 +279,30 @@ test("an error is retried", async (t) => {
   )
 })
 
-test("an empty log is not asked in a tight loop", async (t) => {
+test("an empty log is waited on from the first event", async (t) => {
   const identity = new Identity()
-  const s = await setup(t, identity, 50)
-  assert.equal(
-    await s.consumer.step(),
-    false,
-    "an immediate empty answer should wait before asking again"
+  const s = await setup(t, identity)
+  await s.consumer.step()
+  assert.equal(s.cursor(), "")
+  assert.deepEqual(identity.asked, [""])
+})
+
+test("a cursor past the log's newest event reads the log again from its first event", async (t) => {
+  const identity = theLog()
+  const s = await setup(t, identity, 60_000)
+  s.seed()
+  s.db.exec(`INSERT INTO feed_cursors (id, event_id) VALUES (1, '99')`)
+
+  // No retry wait: the reset is asked again at once, and its events acted on (harmlessly again).
+  await s.runUntil(() => s.cursor() === "13")
+  s.checkActed()
+  assert.deepEqual(identity.asked.slice(0, 3), ["99", "", "12"])
+  const resets = s.logged().filter((line) => line.level === "warn")
+  assert.deepEqual(
+    resets.map((line) => [line.component, line.message, line.cursor]),
+    [["lifecycle", "the lifecycle log was reset: reading it again from its first event", "99"]]
   )
-  await s.consumer.run(AbortSignal.timeout(120))
-  assert.ok(identity.asked.length <= 5, `asked ${identity.asked.length} times in 120ms`)
+  assert.equal(s.logged().some((line) => line.level === "error"), false)
 })
 
 test("stopping cancels the read in flight", async (t) => {
@@ -359,8 +387,8 @@ test("an event without what it acts on, or with a kind not exactly project, chan
   ])
   const s = await setup(t, identity)
   s.seed()
-  assert.equal(await s.consumer.step(), true)
-  assert.equal(await s.consumer.step(), true)
+  await s.consumer.step()
+  await s.consumer.step()
   assert.equal(s.cursor(), "3")
   assert.equal(s.count(purged), 1)
   assert.equal(s.hasProfile(gone), true)
