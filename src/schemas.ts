@@ -1,50 +1,50 @@
-/**
- * The API's schemas. Fastify validates each request against its route's (AJV, no type
- * coercion, a body's unknown keys refused), and @fastify/swagger turns them into the OpenAPI
- * document. A failure is a 422 listing each wrong field with its sentence (validation.ts):
- * the route's `Messages`, else the fallback one.
- */
 import { type Static, Type } from "typebox"
 
-/** A field's sentences by the AJV keyword that failed, `*` for any: path → keyword → sentence. */
-export type Messages = Readonly<Record<string, Readonly<Record<string, string>>>>
-
-/** Plat5 ids, and this API's, are ULIDs in lowercase. */
+/** Plat5 IDs are lowercase ULIDs. */
 export const LOWERCASE_ULID = "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
 
-const STATUS = "Status must be todo, in progress, or done."
+export const DEFAULT_LIMIT = 50
+export const MAX_LIMIT = 100
 
-/** The sentences for a task's body. */
-export const taskMessages: Messages = {
-  title: {
-    required: "Title is required.",
-    minLength: "Title is required.",
-    maxLength: "Title is too long."
-  },
-  status: { "*": STATUS }
-}
+export const listQuerySchema = Type.Object({
+  limit: Type.Optional(
+    Type.String({
+      pattern: "^[0-9]*[1-9][0-9]*$",
+      description: `Page size: default ${DEFAULT_LIMIT}, max ${MAX_LIMIT} (values above ${MAX_LIMIT} are clamped).`
+    })
+  ),
+  starting_after: Type.Optional(
+    Type.String({
+      pattern: LOWERCASE_ULID,
+      description: "ID of the last item on the previous page."
+    })
+  )
+})
 
-/** The sentences for a profile's body. */
-export const profileMessages: Messages = {
-  bio: { required: "Bio is required.", maxLength: "Bio is too long." }
-}
+export type Page = { limit: number; startingAfter: string }
+
+export const pageOf = (query: Static<typeof listQuerySchema>): Page => ({
+  limit: Math.min(query.limit === undefined ? DEFAULT_LIMIT : Number(query.limit), MAX_LIMIT),
+  startingAfter: query.starting_after ?? ""
+})
+
+export const trimPage = <T>(rows: T[], page: Page): { items: T[]; hasMore: boolean } =>
+  rows.length > page.limit
+    ? { items: rows.slice(0, page.limit), hasMore: true }
+    : { items: rows, hasMore: false }
 
 export const taskStatusSchema = Type.Enum(["todo", "in_progress", "done"])
 
-/** Trimmed of white space before it's checked (tasks/routes.ts). AJV counts code points. */
 const titleSchema = Type.String({
   minLength: 1,
-  maxLength: 255,
-  description: "Trimmed of white space, then 1 to 255 characters."
+  pattern: "\\S",
+  description: "Trimmed of whitespace; 1 to 255 characters."
 })
 
 const assigneeIdSchema = Type.Union([Type.String({ pattern: LOWERCASE_ULID }), Type.Null()], {
-  description: "A member id in the project's tree who can see the project, or null for none."
+  description: "Member ID with access to the project, or null for unassigned."
 })
 
-// Authored data: created_by is the member who made it, and stays theirs if they leave
-// the tree (plat5 docs/concepts/model.md#where-a-field-goes). assignee_id is a member in
-// the same tree, or null.
 export const taskSchema = Type.Object({
   id: Type.String(),
   project_id: Type.String(),
@@ -56,7 +56,6 @@ export const taskSchema = Type.Object({
   updated_at: Type.String()
 })
 
-/** A create's body. Without a status, a task is `todo`; without an assignee, it has none. */
 export const taskCreateSchema = Type.Object(
   {
     title: titleSchema,
@@ -66,7 +65,6 @@ export const taskCreateSchema = Type.Object(
   { additionalProperties: false }
 )
 
-/** An update's body. A field absent or null leaves the task's as it is, but for assignee_id: null unassigns. */
 export const taskUpdateSchema = Type.Object(
   {
     title: Type.Optional(Type.Union([titleSchema, Type.Null()])),
@@ -88,7 +86,6 @@ export const profileSchema = Type.Object({
   updated_at: Type.String()
 })
 
-// No name here: the person's name is identity's (GET /user), shown in every org.
 export const profileUpdateSchema = Type.Object(
   { bio: Type.String({ maxLength: 2000, description: "At most 2000 characters, kept as sent." }) },
   { additionalProperties: false }
@@ -98,7 +95,6 @@ export const profileParamsSchema = Type.Object({ user_id: Type.String() })
 export const projectParamsSchema = Type.Object({ project_id: Type.String() })
 export const taskParamsSchema = Type.Object({ project_id: Type.String(), task_id: Type.String() })
 
-/** The Plat5 error envelope (plat5 docs/reference/errors.md), as `ApiError` writes it. */
 export const errorSchema = (description: string) =>
   Type.Object(
     {

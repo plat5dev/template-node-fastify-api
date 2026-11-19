@@ -4,12 +4,11 @@ import { notFound } from "./errors.ts"
 
 const JSON_TYPE = "application/json; charset=utf-8"
 
-/** What answers `/metrics`: the Prometheus text of every series. */
 export type MetricsHandler = (req: IncomingMessage, res: ServerResponse) => void
 
 /**
- * The internal port: liveness, readiness (the database answers), and the Prometheus scrape.
- * GET (and HEAD) only; anything else is the 404 envelope. Not traced.
+ * Internal server on INTERNAL_PORT: `/health/live`, `/health/ready`, and `/metrics`.
+ * Not traced; anything else returns the Plat5 404 envelope.
  */
 export const createInternalServer = (db: Db, metrics: MetricsHandler): Server =>
   createServer((req, res) => {
@@ -20,6 +19,7 @@ export const createInternalServer = (db: Db, metrics: MetricsHandler): Server =>
       })
       res.end(body)
     }
+
     const path = req.url?.split("?")[0]
     if (req.method === "GET" || req.method === "HEAD") {
       if (path === "/health/live") return send(200, `{"status":"healthy"}`)
@@ -33,6 +33,7 @@ export const createInternalServer = (db: Db, metrics: MetricsHandler): Server =>
       }
       if (path === "/metrics") return metrics(req, res)
     }
+
     const requestId = req.headers["x-request-id"]
     send(
       404,

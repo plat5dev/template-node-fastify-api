@@ -1,97 +1,94 @@
 import swagger from "@fastify/swagger"
 import swaggerUi from "@fastify/swagger-ui"
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox"
-import Fastify, { type FastifyError, type FastifyReply, type FastifyRequest } from "fastify"
+import Fastify, {
+  type FastifyError,
+  type FastifyReply,
+  type FastifyRequest
+} from "fastify"
 import type { AccessClient } from "./access.ts"
-import { ApiError, internalError, invalidRequest, notFound } from "./errors.ts"
-import { registerObservability, requestIdOf } from "./observability.ts"
-import { profileRoutes } from "./profiles/routes.ts"
-import type { ProfilesStore } from "./profiles/store.ts"
-import type { Messages } from "./schemas.ts"
-import { taskRoutes } from "./tasks/routes.ts"
-import type { TasksStore } from "./tasks/store.ts"
-import { validationFailed } from "./validation.ts"
-
-declare module "fastify" {
-  interface FastifyContextConfig {
-    /** The sentences for the route's fields, when its request doesn't match its schema. */
-    messages?: Messages
-  }
-}
+import {
+  ApiError,
+  internalError,
+  invalidRequest,
+  notFound,
+  validationFailed
+} from "./errors.ts"
+import { profileRoutes, type ProfilesStore } from "./profiles.ts"
+import { taskRoutes, type TasksStore } from "./tasks.ts"
+import { observabilityPlugin, type RequestObserver } from "./telemetry.ts"
 
 export type AppDeps = {
   tasks: TasksStore
   profiles: ProfilesStore
   access: AccessClient
-  /** The permission a task's assignee needs on its project. */
   assigneePermission: string
-  /** The API's version, in its OpenAPI document. */
   version: string
+  observeRequest?: RequestObserver
+  /** Optional Pino output stream (used by tests to capture structured JSON logs). */
+  logStream?: { write(msg: string): void }
 }
 
-/**
- * Any error as the API's (plat5 docs/reference/errors.md): its own as they are; a request
- * that doesn't match its route's schema a 422; one Fastify couldn't read (a body not sent as
- * `application/json`, empty, or not JSON) a 400; anything else the fallback 500. Never a
- * framework's text in the message.
- */
-const toApiError = (err: FastifyError, req: FastifyRequest): ApiError => {
+const toApiError = (err: FastifyError): ApiError => {
   if (err instanceof ApiError) return err
-  if (err.validation) {
-    return validationFailed(
-      err.validation,
-      err.validationContext,
-      req.body,
-      req.routeOptions.config.messages
-    )
-  }
+  if (err.validation) return validationFailed(err.validation, err.validationContext)
   const status = err.statusCode ?? 500
   return status >= 400 && status < 500 ? invalidRequest() : internalError()
 }
 
-const send = (reply: FastifyReply, answer: ApiError) =>
-  reply.status(answer.status).send(answer.envelope(requestIdOf(reply.request)))
+const sendError = (reply: FastifyReply, answer: ApiError) =>
+  reply.status(answer.status).send(answer.envelope(reply.request.id || null))
 
-/**
- * The public API. A body is JSON, sent as `application/json` (any parameters), and checked
- * against its route's schema: AJV without type coercion, a body's unknown keys refused, every
- * wrong field reported. Every answer is the API's own, in the Plat5 envelope.
- */
 export const buildApp = async (deps: AppDeps) => {
   const app = Fastify({
-    logger: false,
+    logger: {
+      level: process.env.LOG_LEVEL ?? "info",
+      messageKey: "message",
+      base: undefined,
+      timestamp: () => `,"timestamp":"${new Date().toISOString()}"`,
+      formatters: {
+        level: (label) => ({ level: label })
+      },
+      ...(deps.logStream ? { stream: deps.logStream } : {})
+    },
+    logController: new Fastify.LogController({
+      disableRequestLogging: true,
+      requestIdLogLabel: "request_id"
+    }),
+    requestIdHeader: "x-request-id",
+    genReqId: () => "",
+    childLoggerFactory(logger, bindings, opts) {
+      return bindings.request_id ? logger.child(bindings, opts) : logger
+    },
     routerOptions: { ignoreTrailingSlash: true },
     ajv: { customOptions: { coerceTypes: false, removeAdditional: false, allErrors: true } },
-    // A URL Fastify can't decode: the envelope, never Fastify's text.
-    frameworkErrors: (_err, _req, reply) => send(reply, invalidRequest())
+    frameworkErrors: (_err, _req, reply) => sendError(reply, invalidRequest())
   }).withTypeProvider<TypeBoxTypeProvider>()
 
-  // JSON is the only body: anything else is Fastify's 415, answered as a 400.
   app.removeContentTypeParser("text/plain")
 
-  registerObservability(app)
+  await app.register(observabilityPlugin, { observeRequest: deps.observeRequest })
 
-  // A route that takes a body answers 400 when none is sent.
-  app.addHook("preValidation", async (req) => {
-    if (req.routeOptions.schema?.body !== undefined && req.body === undefined)
+  app.addHook("preValidation", async (req: FastifyRequest) => {
+    if (req.routeOptions.schema?.body !== undefined && req.body === undefined) {
       throw invalidRequest()
+    }
   })
 
   app.setErrorHandler((err: FastifyError, req, reply) => {
-    const answer = toApiError(err, req)
+    const answer = toApiError(err)
     req.failure = { answer, cause: answer === err ? undefined : err }
     if (answer.status >= 500) req.span?.recordException(err)
-    return send(reply, answer)
+    return sendError(reply, answer)
   })
 
-  // An unknown route, or a known path in a method it doesn't serve: the same 404 either way.
-  app.setNotFoundHandler((_req, reply) => send(reply, notFound("resource", null)))
+  app.setNotFoundHandler((_req, reply) => sendError(reply, notFound("resource", null)))
 
   await app.register(swagger, {
     openapi: {
       info: {
         title: "Plat5 API",
-        description: "Reference Node + Fastify business service for Plat5",
+        description: "Reference Node + Fastify + TypeBox business service for Plat5",
         version: deps.version
       }
     }
@@ -105,6 +102,7 @@ export const buildApp = async (deps: AppDeps) => {
     access: deps.access,
     assigneePermission: deps.assigneePermission
   })
+
   await app.ready()
   return app
 }

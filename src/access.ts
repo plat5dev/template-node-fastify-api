@@ -1,39 +1,39 @@
 /**
- * Asks identity whether a member holds a permission on a node, for a member who isn't the
- * caller (plat5 docs/guides/write-a-service.md#checking-access-outside-a-request).
- *
- * Each question is one evaluation on identity's internal port (plat5
- * docs/reference/api/internal.md#access-evaluation). Only a 200 with a boolean `decision`
- * is an answer. Anything else is an error, logged with the request id, and no answer is no.
+ * Access evaluation client for identity's internal API
+ * (plat5 docs/reference/api/internal.md#access-evaluation).
+ * Fail-closed: any non-200 response, missing boolean decision, or error throws.
  */
-import { type Context, propagation } from "@opentelemetry/api"
-import { log, messageOf } from "./log.ts"
+import { context, propagation } from "@opentelemetry/api"
+import type { FastifyBaseLogger } from "fastify"
+import { errorMessage } from "./errors.ts"
 
-/** Whether the member `memberId` holds `permission` on the node `nodeId` of kind `kind`. */
-export type Question = {
+export type AccessQuestion = {
   memberId: string
   kind: string
   nodeId: string
   permission: string
 }
 
-export type AccessClient = {
-  /**
-   * Identity's decision. `parent` is the request's trace context, sent as `traceparent`, and
-   * `requestId` its `X-Request-ID`, sent to identity and logged with a failure. Throws when
-   * identity doesn't answer.
-   */
-  evaluate: (parent: Context, requestId: string | null, question: Question) => Promise<boolean>
+export type AccessEvalOptions = {
+  requestId?: string | null
+  log?: FastifyBaseLogger
 }
 
-/** Asks identity at `identityUrl`, its internal base URL. Unset, every question fails: there's no one to ask. */
+export type AccessClient = {
+  evaluate: (question: AccessQuestion, opts?: AccessEvalOptions) => Promise<boolean>
+}
+
 export const accessClient = (identityUrl: string | undefined): AccessClient => {
-  const ask = async (parent: Context, requestId: string | null, q: Question): Promise<boolean> => {
-    if (identityUrl === undefined) throw new Error("IDENTITY_INTERNAL_URL is unset")
+  const baseUrl = identityUrl?.replace(/\/+$/, "")
+
+  const ask = async (q: AccessQuestion, requestId: string | null): Promise<boolean> => {
+    if (baseUrl === undefined) throw new Error("IDENTITY_INTERNAL_URL is unset")
+
     const headers: Record<string, string> = { "content-type": "application/json" }
-    if (requestId !== null) headers["x-request-id"] = requestId
-    propagation.inject(parent, headers)
-    const res = await fetch(`${identityUrl}/access/v1/evaluation`, {
+    if (requestId) headers["x-request-id"] = requestId
+    propagation.inject(context.active(), headers)
+
+    const res = await fetch(`${baseUrl}/access/v1/evaluation`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -43,26 +43,32 @@ export const accessClient = (identityUrl: string | undefined): AccessClient => {
       }),
       signal: AbortSignal.timeout(10_000)
     })
+
     if (res.status !== 200) {
       await res.body?.cancel()
       throw new Error(`access evaluation answered ${res.status}`)
     }
-    const answer = (await res.json()) as { decision?: unknown } | null
-    if (typeof answer?.decision !== "boolean")
-      throw new Error("access evaluation answered without a decision")
-    return answer.decision
+    const body = (await res.json()) as { decision?: unknown } | null
+    if (typeof body?.decision !== "boolean") {
+      throw new Error("access evaluation answered without a boolean decision")
+    }
+    return body.decision
   }
 
   return {
-    evaluate: async (parent, requestId, question) => {
+    evaluate: async (question, opts = {}) => {
+      const requestId = opts.requestId || null
       try {
-        return await ask(parent, requestId, question)
+        return await ask(question, requestId)
       } catch (err) {
-        log("error", "access evaluation failed", {
-          component: "access",
-          request_id: requestId,
-          error_message: messageOf(err)
-        })
+        opts.log?.error(
+          {
+            component: "access",
+            ...(requestId ? { request_id: requestId } : {}),
+            error_message: errorMessage(err)
+          },
+          "access evaluation failed"
+        )
         throw err
       }
     }

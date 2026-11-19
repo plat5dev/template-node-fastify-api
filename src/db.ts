@@ -1,7 +1,6 @@
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 import { DatabaseSync } from "node:sqlite"
-import { recordDbOperation } from "./metrics.ts"
 
 export type Db = DatabaseSync
 
@@ -21,8 +20,7 @@ export const migrate = (db: Db): void => {
       updated_at TEXT NOT NULL
     );
 
-    -- A project is a Plat5 node: its tasks are keyed by its id, and go when it's purged.
-    -- assignee_id is a member id in the project's tree, or NULL.
+    -- A project is a Plat5 node: its tasks are keyed by its id and removed when purged.
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY NOT NULL,
       project_id TEXT NOT NULL,
@@ -36,8 +34,7 @@ export const migrate = (db: Db): void => {
 
     CREATE INDEX IF NOT EXISTS tasks_project_id_idx ON tasks (project_id);
 
-    -- The last event acted on in identity's lifecycle log: one row, an opaque decimal
-    -- string. Kept with the data it cleans up, so a restore rewinds both together.
+    -- Last event acted on in identity's lifecycle log (single row, opaque decimal string).
     CREATE TABLE IF NOT EXISTS feed_cursors (
       id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
       event_id TEXT NOT NULL
@@ -45,20 +42,7 @@ export const migrate = (db: Db): void => {
   `)
 }
 
-/** Runs `fn` as the database operation `operation`, timed and counted. */
-export const trackDb = <T>(operation: string, fn: () => T): T => {
-  const started = performance.now()
-  let failed = true
-  try {
-    const result = fn()
-    failed = false
-    return result
-  } finally {
-    recordDbOperation(operation, (performance.now() - started) / 1000, failed)
-  }
-}
-
-/** Runs `fn` in one transaction: it commits when `fn` returns, and rolls back when it throws. */
+/** Runs `fn` inside a single SQLite BEGIN IMMEDIATE transaction. */
 export const transaction = <T>(db: Db, fn: () => T): T => {
   db.exec("BEGIN IMMEDIATE")
   try {

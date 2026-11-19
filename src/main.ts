@@ -2,11 +2,11 @@ import { accessClient } from "./access.ts"
 import { buildApp } from "./app.ts"
 import { loadConfig } from "./config.ts"
 import { connect, migrate } from "./db.ts"
+import { errorMessage } from "./errors.ts"
 import { createInternalServer } from "./internal.ts"
 import { lifecycleReader } from "./lifecycle.ts"
-import { log } from "./log.ts"
-import { profilesStore } from "./profiles/store.ts"
-import { tasksStore } from "./tasks/store.ts"
+import { profilesStore } from "./profiles.ts"
+import { tasksStore } from "./tasks.ts"
 import { initTelemetry } from "./telemetry.ts"
 
 const config = loadConfig()
@@ -22,39 +22,71 @@ const app = await buildApp({
   profiles,
   access: accessClient(config.identityInternalUrl),
   assigneePermission: config.taskAssigneePermission,
-  version: config.resource["service.version"] ?? "dev"
+  version: config.version,
+  observeRequest: telemetry.observeRequest
 })
+telemetry.setLogger(app.log)
+
 const internal = createInternalServer(db, telemetry.metrics)
 
-// SIGINT or SIGTERM aborts it: the lifecycle reader stops, its read in flight cancelled.
 const stopping = new AbortController()
 let following: Promise<void> = Promise.resolve()
+let shuttingDown: Promise<void> | undefined
 
-const shutdown = async (signal: string) => {
-  log("info", "shutting down", { signal })
+const closeAll = async () => {
   stopping.abort()
   await app.close()
-  await new Promise<void>((resolve) => internal.close(() => resolve()))
-  // Wait for the reader, so its last transaction ends before the database closes.
+  if (internal.listening) {
+    await new Promise<void>((resolve) => internal.close(() => resolve()))
+  }
   await following
   db.close()
   await telemetry.shutdown()
-  process.exit(0)
 }
+
+const shutdown = (signal: string) => {
+  if (shuttingDown) return shuttingDown
+  app.log.info({ signal }, "shutting down")
+  shuttingDown = closeAll().then(
+    () => process.exit(0),
+    (err) => {
+      app.log.error({ error_message: errorMessage(err) }, "shutdown failed")
+      process.exit(1)
+    }
+  )
+  return shuttingDown
+}
+
 process.on("SIGINT", () => void shutdown("SIGINT"))
 process.on("SIGTERM", () => void shutdown("SIGTERM"))
 
-await new Promise<void>((resolve) => internal.listen(config.internalPort, "0.0.0.0", resolve))
-await app.listen({ port: config.port, host: "0.0.0.0" })
-log("info", "starting api server", { port: config.port, internal_port: config.internalPort })
+try {
+  await new Promise<void>((resolve, reject) => {
+    internal.once("error", reject)
+    internal.listen(config.internalPort, "0.0.0.0", () => {
+      internal.off("error", reject)
+      resolve()
+    })
+  })
+  await app.listen({ port: config.port, host: "0.0.0.0" })
+} catch (err) {
+  app.log.error({ error_message: errorMessage(err) }, "startup failed")
+  await closeAll().catch(() => {})
+  process.exit(1)
+}
+
+app.log.info({ port: config.port, internal_port: config.internalPort }, "api server started")
 
 if (config.identityInternalUrl !== undefined) {
-  following = lifecycleReader({ identityUrl: config.identityInternalUrl, db, tasks, profiles }).run(
-    stopping.signal
-  )
+  following = lifecycleReader({
+    identityUrl: config.identityInternalUrl,
+    db,
+    tasks,
+    profiles,
+    log: app.log
+  }).run(stopping.signal)
 } else {
-  log(
-    "warn",
-    "IDENTITY_INTERNAL_URL is unset: not reading identity's lifecycle log, so a purged project's tasks and a deleted person's profile are kept, and a task's assignee can't be checked (503)"
+  app.log.warn(
+    "IDENTITY_INTERNAL_URL is unset: lifecycle log is disabled and assignee checks will return 503"
   )
 }

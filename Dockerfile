@@ -39,7 +39,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 # The release this image reports as service.version; dev without one.
 ARG VERSION=dev
-RUN node -e 'require("node:fs").writeFileSync("src/version.ts", `export const VERSION = ${JSON.stringify(process.env.VERSION)}\n`)'
+ENV APP_VERSION=${VERSION}
 
 USER node
 

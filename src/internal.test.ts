@@ -1,14 +1,13 @@
+import { diag, DiagLogLevel } from "@opentelemetry/api"
 import assert from "node:assert/strict"
 import type { AddressInfo } from "node:net"
 import { after, test, type TestContext } from "node:test"
-import { loadConfig } from "./config.ts"
-import { connect, migrate, trackDb } from "./db.ts"
+import { connect, migrate } from "./db.ts"
 import { createInternalServer } from "./internal.ts"
-import { observeRequest } from "./metrics.ts"
-import { initTelemetry } from "./telemetry.ts"
+import { createDiagLogger, initTelemetry } from "./telemetry.ts"
+import { memoryLogger } from "./testing.ts"
 
-// No OTLP: the series go to the /metrics scrape only.
-const telemetry = initTelemetry(loadConfig({ TASK_ASSIGNEE_PERMISSION: "project:read" }))
+const telemetry = initTelemetry({ otlpEndpoint: undefined, version: "test" })
 after(() => telemetry.shutdown())
 
 const serve = async (t: TestContext) => {
@@ -20,42 +19,35 @@ const serve = async (t: TestContext) => {
   return { db, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }
 }
 
-test("health: live, and ready while the database answers", async (t) => {
+test("health: live and ready reflect database availability", async (t) => {
   const { db, url } = await serve(t)
   let res = await fetch(`${url}/health/live`)
   assert.equal(res.status, 200)
   assert.deepEqual(await res.json(), { status: "healthy" })
+
   res = await fetch(`${url}/health/ready`)
   assert.equal(res.status, 200)
   assert.deepEqual(await res.json(), { status: "healthy" })
+
   db.close()
   res = await fetch(`${url}/health/ready`)
   assert.equal(res.status, 503)
   assert.deepEqual(await res.json(), { status: "unhealthy" })
 })
 
-test("/metrics: the contract's series, names and labels, and the process ones", async (t) => {
+test("/metrics exposes HTTP and process series without scope or target_info", async (t) => {
   const { url } = await serve(t)
-  observeRequest("GET", "/projects/:project_id/tasks", 200, 0.003)
-  trackDb("tasks.list", () => 1)
-  assert.throws(() =>
-    trackDb("tasks.insert", () => {
-      throw new Error("busy")
-    })
-  )
+  telemetry.observeRequest("GET", "/projects/:project_id/tasks", 200, 0.003)
+
   const res = await fetch(`${url}/metrics`)
   assert.equal(res.status, 200)
   assert.match(res.headers.get("content-type") ?? "", /^text\/plain/)
   const text = await res.text()
-  const db = `db_system_name="sqlite",db_operation_name="tasks.insert",db_namespace="api"`
+
   for (const series of [
     `http_requests_total{method="GET",route="/projects/:project_id/tasks",status="200"} 1`,
     `http_request_duration_seconds_bucket{method="GET",route="/projects/:project_id/tasks",le="0.005"} 1`,
-    `http_request_duration_seconds_bucket{method="GET",route="/projects/:project_id/tasks",le="5"} 1`,
-    `db_operations_total{${db}} 1`,
-    `db_operation_errors_total{${db}} 1`,
-    `db_operation_duration_seconds_bucket{${db},le="0.001"} 1`,
-    `db_operation_duration_seconds_bucket{${db},le="1"} 1`
+    `http_request_duration_seconds_bucket{method="GET",route="/projects/:project_id/tasks",le="5"} 1`
   ]) {
     assert.ok(text.includes(series), series)
   }
@@ -66,12 +58,11 @@ test("/metrics: the contract's series, names and labels, and the process ones", 
   ]) {
     assert.match(text, new RegExp(`^${name} \\d`, "m"), name)
   }
-  // No scope labels, no target_info.
   assert.equal(text.includes("otel_scope"), false)
   assert.equal(text.includes("target_info"), false)
 })
 
-test("another path or method is the 404 envelope", async (t) => {
+test("unknown internal path or method returns Plat5 404 envelope", async (t) => {
   const { url } = await serve(t)
   for (const [method, path] of [
     ["GET", "/nope"],
@@ -90,4 +81,16 @@ test("another path or method is the 404 envelope", async (t) => {
       }
     })
   }
+})
+
+test("OTel diag logger emits structured error lines through Pino", (t) => {
+  const { log, entries } = memoryLogger()
+  diag.setLogger(createDiagLogger(log), DiagLogLevel.WARN)
+  t.after(() => diag.disable())
+
+  diag.error("traces export: connection refused")
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0]?.level, "error")
+  assert.equal(entries[0]?.message, "telemetry error")
+  assert.equal(entries[0]?.error_message, "traces export: connection refused")
 })

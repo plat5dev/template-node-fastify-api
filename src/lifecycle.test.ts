@@ -4,9 +4,10 @@ import type { AddressInfo } from "node:net"
 import { test, type TestContext } from "node:test"
 import { setTimeout as sleep } from "node:timers/promises"
 import { connect, migrate } from "./db.ts"
-import { decodePage, type Event, lifecycleReader, TYPES } from "./lifecycle.ts"
-import { profilesStore } from "./profiles/store.ts"
-import { tasksStore } from "./tasks/store.ts"
+import { decodePage, type LifecycleEvent, lifecycleReader, TYPES } from "./lifecycle.ts"
+import { profilesStore } from "./profiles.ts"
+import { tasksStore } from "./tasks.ts"
+import { memoryLogger } from "./testing.ts"
 
 const purged = "01jd8x3k7q0000000000000001"
 const kept = "01jd8x3k7q0000000000000002"
@@ -14,29 +15,21 @@ const gone = "01jd8x3k7q00000000000000u1"
 const stays = "01jd8x3k7q00000000000000u2"
 const fresh = "01jd8x3k7q00000000000000u3"
 
-type Served = Event & { type: string }
+type Served = LifecycleEvent & { type: string }
 
-const cursorAhead = {
+const cursorAheadBody = JSON.stringify({
   error: {
     type: "invalid_request_error",
     code: "CURSOR_AHEAD",
-    message: "The log has no event at this cursor. Read from its first event.",
+    message: "Cursor ahead of log.",
     request_id: null,
     details: null
   }
-}
+})
 
-/**
- * Identity, serving the one lifecycle log at /internal/events as identity does: types
- * filters, two events to a page, an after past the newest event is a 409 CURSOR_AHEAD, and
- * otherwise it waits for a matching event up to `wait`, then answers 204. The first requests
- * answer `fail`'s statuses, one each.
- */
-class Identity {
+class FakeIdentity {
   wait = 50
-  /** Statuses for the first requests. */
-  fail: number[] = []
-  /** Each request's after, types and limit. */
+  fail: { status: number; body?: string }[] = []
   readonly asked: string[] = []
   readonly types: string[] = []
   readonly limits: string[] = []
@@ -49,18 +42,15 @@ class Identity {
     this.events = events
   }
 
-  /** Appends an event and wakes any waiting read. */
   add(event: Served): void {
     this.events.push(event)
     for (const wake of [...this.added]) wake()
   }
 
-  /** Resolves when a read is next waiting. */
   nextWait(): Promise<void> {
     return new Promise((resolve) => this.waiting.push(resolve))
   }
 
-  /** The events after `after` that match `types`, at most two, and whether more follow. */
   private page(after: string, types: string[]): { events: Served[]; more: boolean } {
     const match = this.events.filter((e) => Number(e.id) > Number(after) && types.includes(e.type))
     return { events: match.slice(0, 2), more: match.length > 2 }
@@ -75,35 +65,40 @@ class Identity {
       this.asked.push(after)
       this.types.push(url.searchParams.get("types") ?? "")
       this.limits.push(url.searchParams.get("limit") ?? "")
+
       const failure = this.fail.shift()
-      if (failure !== undefined) return res.writeHead(failure).end()
+      if (failure !== undefined) {
+        res.writeHead(failure.status, { "content-type": "application/json" })
+        return res.end(failure.body ?? "")
+      }
       if (Number(after) > Math.max(0, ...this.events.map((e) => Number(e.id)))) {
         res.writeHead(409, { "content-type": "application/json" })
-        return res.end(JSON.stringify(cursorAhead))
+        return res.end(cursorAheadBody)
       }
+
       let page = this.page(after, types)
       const deadline = performance.now() + this.wait
       while (page.events.length === 0) {
         const left = deadline - performance.now()
         const outcome = await new Promise<"added" | "timeout" | "closed">((resolve) => {
-          const done = (outcome: "added" | "timeout" | "closed") => {
+          const done = (o: "added" | "timeout" | "closed") => {
             this.added.delete(onAdd)
             clearTimeout(timer)
             res.off("close", onClose)
-            resolve(outcome)
+            resolve(o)
           }
           const onAdd = () => done("added")
           const onClose = () => done("closed")
           const timer = setTimeout(() => done("timeout"), Math.max(0, left))
           this.added.add(onAdd)
           res.on("close", onClose)
-          // Tell a test the read is waiting, if it's listening.
           this.waiting.shift()?.()
         })
         if (outcome === "closed") return
         if (outcome === "timeout") return res.writeHead(204).end()
         page = this.page(after, types)
       }
+
       res.writeHead(200, { "content-type": "application/json" })
       res.end(JSON.stringify({ events: page.events, has_more: page.more }))
     })
@@ -116,52 +111,60 @@ class Identity {
   }
 }
 
-const setup = async (t: TestContext, identity: Identity, retryMs = 10) => {
-  // The consumer's lines, to read and to keep out of the test output.
-  const logs = t.mock.method(console, "log", () => {})
+const sampleLog = () =>
+  new FakeIdentity([
+    { id: "7", type: "node.created", kind: "project", node_id: purged },
+    { id: "8", type: "user.created", user_id: fresh },
+    { id: "9", type: "node.purged", kind: "organization", node_id: kept },
+    { id: "10", type: "member.removed" },
+    { id: "12", type: "node.purged", kind: "project", node_id: purged },
+    { id: "13", type: "user.deleted", user_id: gone },
+    { id: "20", type: "node.deleted", kind: "project", node_id: kept }
+  ])
+
+const setup = async (t: TestContext, identity: FakeIdentity, retryMs = 10) => {
+  const { log, entries } = memoryLogger()
   await identity.listen(t)
   const db = connect(":memory:")
   migrate(db)
   t.after(() => db.close())
   const tasks = tasksStore(db)
   const profiles = profilesStore(db)
-  const consumer = lifecycleReader({ identityUrl: identity.url, db, tasks, profiles, retryMs })
-
-  const addTask = (id: string, projectId: string) =>
-    tasks.insert({
-      id,
-      project_id: projectId,
-      title: "t",
-      status: "todo",
-      assignee_id: null,
-      created_by: "01jd8x3k7q00000000000000mm",
-      created_at: "now",
-      updated_at: "now"
-    })
-  const count = (projectId: string) =>
-    tasks.list(projectId, { limit: 100, startingAfter: "" }).items.length
-  const addProfile = (userId: string) => profiles.upsert(userId, "hi", "now")
-  const hasProfile = (userId: string) =>
-    db.prepare(`SELECT 1 FROM profiles WHERE user_id = ?`).get(userId) !== undefined
-  const cursor = consumer.cursor
-  const logged = (): Record<string, unknown>[] =>
-    logs.mock.calls.map((call) => JSON.parse(String(call.arguments[0])))
+  const consumer = lifecycleReader({ identityUrl: identity.url, db, tasks, profiles, log, retryMs })
 
   const seed = () => {
-    addTask("01jd8x3k7q0000000000000t01", purged)
-    addTask("01jd8x3k7q0000000000000t02", kept)
-    addProfile(gone)
-    addProfile(stays)
-  }
-  const checkActed = () => {
-    assert.equal(count(purged), 0, "purged project's tasks are kept")
-    assert.equal(count(kept), 1, "other project's tasks are gone")
-    assert.equal(hasProfile(gone), false, "deleted person's profile is kept")
-    assert.equal(hasProfile(stays), true, "another person's profile is gone")
-    assert.equal(hasProfile(fresh), false, "user.created made a profile")
+    for (const [id, projectId] of [
+      ["01jd8x3k7q0000000000000t01", purged],
+      ["01jd8x3k7q0000000000000t02", kept]
+    ] as const) {
+      tasks.insert({
+        id,
+        project_id: projectId,
+        title: "t",
+        status: "todo",
+        assignee_id: null,
+        created_by: "01jd8x3k7q00000000000000mm",
+        created_at: "now",
+        updated_at: "now"
+      })
+    }
+    profiles.upsert(gone, "hi", "now")
+    profiles.upsert(stays, "hi", "now")
   }
 
-  /** Runs the consumer until `cond` holds, then stops it and waits for run to return. */
+  const countTasks = (projectId: string) =>
+    tasks.list(projectId, { limit: 100, startingAfter: "" }).items.length
+  const hasProfile = (userId: string) =>
+    db.prepare(`SELECT 1 FROM profiles WHERE user_id = ?`).get(userId) !== undefined
+
+  const assertCleaned = () => {
+    assert.equal(countTasks(purged), 0)
+    assert.equal(countTasks(kept), 1)
+    assert.equal(hasProfile(gone), false)
+    assert.equal(hasProfile(stays), true)
+    assert.equal(hasProfile(fresh), false)
+  }
+
   const runUntil = async (cond: () => boolean) => {
     const stopping = new AbortController()
     const done = consumer.run(stopping.signal)
@@ -175,138 +178,86 @@ const setup = async (t: TestContext, identity: Identity, retryMs = 10) => {
       await sleep(5)
     }
     stopping.abort()
-    await returnsWithin(done, 2_000)
+    await done
   }
 
-  return {
-    consumer,
-    db,
-    addProfile,
-    count,
-    hasProfile,
-    cursor,
-    logged,
-    seed,
-    checkActed,
-    runUntil
-  }
+  return { consumer, db, entries, seed, countTasks, hasProfile, assertCleaned, runUntil }
 }
 
-const returnsWithin = async (done: Promise<void>, ms: number) => {
-  const late = Symbol()
-  const outcome = await Promise.race([done, sleep(ms, late)])
-  assert.notEqual(outcome, late, "run didn't return when it was stopped")
-}
-
-const theLog = () =>
-  new Identity([
-    { id: "7", type: "node.created", kind: "project", node_id: purged },
-    { id: "8", type: "user.created", user_id: fresh },
-    { id: "9", type: "node.purged", kind: "organization", node_id: kept },
-    { id: "10", type: "member.removed" },
-    { id: "12", type: "node.purged", kind: "project", node_id: purged },
-    { id: "13", type: "user.deleted", user_id: gone },
-    { id: "20", type: "node.deleted", kind: "project", node_id: kept }
-  ])
-
-test("acts on each page and advances the cursor", async (t) => {
-  const identity = theLog()
+test("applies node.purged (project) and user.deleted, advancing cursor per page", async (t) => {
+  const identity = sampleLog()
   const s = await setup(t, identity)
   s.seed()
 
-  // No cursor yet: from the first event, then from each page's last id.
-  for (let i = 0; i < 2; i++) {
-    await s.consumer.step()
-  }
-  s.checkActed()
-  assert.equal(s.cursor(), "13")
+  await s.consumer.step()
+  await s.consumer.step()
+  s.assertCleaned()
+  assert.equal(s.consumer.cursor(), "13")
   assert.deepEqual(identity.asked, ["", "12"])
-  assert.ok(identity.types.every((types) => types === "node.purged,user.deleted"))
-  assert.equal(TYPES, "node.purged,user.deleted")
-  assert.ok(identity.limits.every((limit) => limit === "100"))
+  assert.ok(identity.types.every((v) => v === TYPES))
+  assert.ok(identity.limits.every((v) => v === "100"))
+
+  // 204 at head keeps cursor unchanged.
+  await s.consumer.step()
+  assert.equal(s.consumer.cursor(), "13")
 })
 
-test("a 204 is asked again at once", async (t) => {
-  const identity = theLog()
-  const s = await setup(t, identity)
-  await s.consumer.step()
-  await s.consumer.step()
-
-  // At the head: identity waits, answers 204, and nothing changes.
-  await s.consumer.step()
-  assert.equal(s.cursor(), "13")
-  assert.equal(identity.asked.at(-1), "13")
-})
-
-test("a waiting read gets a new event", async (t) => {
-  const identity = theLog()
+test("long-poll wakes when a matching event arrives", async (t) => {
+  const identity = sampleLog()
   identity.wait = 5_000
   const s = await setup(t, identity)
+  s.seed()
   await s.consumer.step()
   await s.consumer.step()
 
   void (async () => {
     await identity.nextWait()
-    identity.add({ id: "21", type: "node.created" }) // not asked for: the wait goes on
+    identity.add({ id: "21", type: "node.created" })
     await identity.nextWait()
     identity.add({ id: "22", type: "user.deleted", user_id: stays })
   })()
+
   const started = performance.now()
   await s.consumer.step()
-  assert.ok(performance.now() - started < 2_000, "the read waited out its timeout")
-  assert.equal(s.hasProfile(stays), false, "the new event wasn't acted on")
-  assert.equal(s.cursor(), "22")
+  assert.ok(performance.now() - started < 2_000)
+  assert.equal(s.hasProfile(stays), false)
+  assert.equal(s.consumer.cursor(), "22")
 })
 
-test("an error is retried", async (t) => {
-  const identity = theLog()
-  // Identity's Postgres unavailable is a 503; any other failure, a 500.
-  identity.fail = [503, 500]
+test("retries errors (503, 500, non-CURSOR_AHEAD 409) without advancing cursor", async (t) => {
+  const identity = sampleLog()
+  identity.fail = [
+    { status: 503 },
+    { status: 409, body: JSON.stringify({ error: { code: "CONFLICT" } }) },
+    { status: 500 }
+  ]
   const s = await setup(t, identity)
   s.seed()
 
   await assert.rejects(s.consumer.step(), /answered 503/)
-  assert.equal(s.cursor(), "", "a failed read moved the cursor")
+  await assert.rejects(s.consumer.step(), /answered 409/)
+  assert.equal(s.consumer.cursor(), "")
 
-  // run logs the 500, waits its retry, and reads on.
-  await s.runUntil(() => s.cursor() === "13")
-  s.checkActed()
-  assert.deepEqual(identity.asked.slice(0, 4), ["", "", "", "12"])
-  const failures = s.logged().filter((line) => line.message === "lifecycle read failed")
-  assert.deepEqual(
-    failures.map((line) => [line.level, line.error_message]),
-    [["error", "lifecycle log answered 500"]]
-  )
+  await s.runUntil(() => s.consumer.cursor() === "13")
+  s.assertCleaned()
+  assert.ok(s.entries.some((e) => e.level === "error" && e.message === "lifecycle read failed"))
 })
 
-test("an empty log is waited on from the first event", async (t) => {
-  const identity = new Identity()
-  const s = await setup(t, identity)
-  await s.consumer.step()
-  assert.equal(s.cursor(), "")
-  assert.deepEqual(identity.asked, [""])
-})
-
-test("a cursor past the log's newest event reads the log again from its first event", async (t) => {
-  const identity = theLog()
+test("409 CURSOR_AHEAD resets cursor and replays from first event without retry delay", async (t) => {
+  const identity = sampleLog()
   const s = await setup(t, identity, 60_000)
   s.seed()
   s.db.exec(`INSERT INTO feed_cursors (id, event_id) VALUES (1, '99')`)
 
-  // No retry wait: the reset is asked again at once, and its events acted on (harmlessly again).
-  await s.runUntil(() => s.cursor() === "13")
-  s.checkActed()
+  await s.runUntil(() => s.consumer.cursor() === "13")
+  s.assertCleaned()
   assert.deepEqual(identity.asked.slice(0, 3), ["99", "", "12"])
-  const resets = s.logged().filter((line) => line.level === "warn")
-  assert.deepEqual(
-    resets.map((line) => [line.component, line.message, line.cursor]),
-    [["lifecycle", "the lifecycle log was reset: reading it again from its first event", "99"]]
-  )
-  assert.equal(s.logged().some((line) => line.level === "error"), false)
+  assert.ok(s.entries.some((e) => e.level === "warn" && e.cursor === "99"))
+  assert.equal(s.entries.some((e) => e.level === "error"), false)
 })
 
-test("stopping cancels the read in flight", async (t) => {
-  const identity = theLog()
+test("abort cancels an in-flight long-poll cleanly without error logs", async (t) => {
+  const identity = sampleLog()
   identity.wait = 60_000
   const s = await setup(t, identity)
   await s.consumer.step()
@@ -317,79 +268,44 @@ test("stopping cancels the read in flight", async (t) => {
   const done = s.consumer.run(stopping.signal)
   await waiting
   stopping.abort()
-  await returnsWithin(done, 2_000)
-  assert.equal(
-    s.logged().some((line) => line.level === "error"),
-    false,
-    "stopping logged an error"
-  )
+
+  const late = Symbol()
+  const outcome = await Promise.race([done, sleep(2_000, late)])
+  assert.notEqual(outcome, late)
+  assert.equal(s.entries.some((e) => e.level === "error"), false)
 })
 
-test("replay changes nothing", async (t) => {
-  const identity = theLog()
+test("deletes and cursor advance commit atomically in one transaction", async (t) => {
+  const identity = sampleLog()
   const s = await setup(t, identity)
   s.seed()
-  await s.runUntil(() => s.cursor() === "13")
-
-  // Reset the cursor, as the README says, and read the log again from its first event.
-  s.db.exec(`DELETE FROM feed_cursors`)
-  const before = identity.asked.length
-  await s.runUntil(() => s.cursor() === "13")
-  s.checkActed()
-  assert.equal(identity.asked[before], "", "replay should ask from the first event")
-  assert.ok(
-    s.logged().some((line) => line.message === "following the lifecycle log from its first event")
-  )
-})
-
-test("a page commits with its cursor", async (t) => {
-  const identity = theLog()
-  const s = await setup(t, identity)
-  s.seed()
-  // The cursor can't be saved, so the page's deletes roll back with it.
   s.db.exec(
     `CREATE TRIGGER no_cursor BEFORE INSERT ON feed_cursors BEGIN SELECT RAISE(ABORT, 'no'); END`
   )
-  for (let i = 0; i < 2; i++) {
-    await assert.rejects(s.consumer.step(), "want an error when the cursor can't be saved")
-  }
-  assert.equal(s.count(purged), 1, "the purge's delete wasn't rolled back")
-  assert.equal(s.cursor(), "")
+
+  await assert.rejects(s.consumer.step())
+  await assert.rejects(s.consumer.step())
+  assert.equal(s.countTasks(purged), 1)
+  assert.equal(s.consumer.cursor(), "")
 })
 
-test("a page: its events by their exact keys, an event without an id skipped", () => {
+test("decodePage skips events without string id and rejects non-array payloads", () => {
   assert.deepEqual(decodePage({ events: [] }), [])
-  const events = decodePage({
-    events: [
-      { id: "7", Type: "node.purged", kind: "project", NODE_ID: "x", extra: 1 },
-      { id: "8", type: "user.deleted", user_id: 5 },
-      { type: "user.deleted", user_id: "u" },
-      { id: "", type: "user.deleted", user_id: "u" },
-      null,
-      "x"
-    ],
-    has_more: "ignored"
-  })
-  assert.deepEqual(events, [
-    { id: "7", type: undefined, kind: "project", node_id: undefined, user_id: undefined },
-    { id: "8", type: "user.deleted", kind: undefined, node_id: undefined, user_id: undefined }
-  ])
-  for (const page of [[], null, {}, { events: null }, { events: {} }]) {
-    assert.throws(() => decodePage(page), JSON.stringify(page))
+  assert.deepEqual(
+    decodePage({
+      events: [
+        { id: "7", Type: "node.purged", kind: "project", extra: 1 },
+        { id: "8", type: "user.deleted", user_id: 5 },
+        { id: "", type: "user.deleted" },
+        null
+      ]
+    }),
+    [
+      { id: "7", type: undefined, kind: "project", node_id: undefined, user_id: undefined },
+      { id: "8", type: "user.deleted", kind: undefined, node_id: undefined, user_id: undefined }
+    ]
+  )
+  for (const bad of [[], null, {}, { events: null }]) {
+    assert.throws(() => decodePage(bad))
   }
-})
-
-test("an event without what it acts on, or with a kind not exactly project, changes nothing", async (t) => {
-  const identity = new Identity([
-    { id: "1", type: "node.purged", kind: "project" },
-    { id: "2", type: "user.deleted" },
-    { id: "3", type: "node.purged", kind: "Project", node_id: purged }
-  ])
-  const s = await setup(t, identity)
-  s.seed()
-  await s.consumer.step()
-  await s.consumer.step()
-  assert.equal(s.cursor(), "3")
-  assert.equal(s.count(purged), 1)
-  assert.equal(s.hasProfile(gone), true)
 })

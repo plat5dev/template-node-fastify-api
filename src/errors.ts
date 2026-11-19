@@ -1,10 +1,10 @@
-/** What failed, for a 5xx's `error_type` and `error.type` (plat5 docs/reference/telemetry.md#error-fields-5xx-only). */
-export type ErrorKind = "auth" | "network" | "db" | "io" | "internal" | "validation"
+import type { FastifySchemaValidationError } from "fastify"
 
-/** A field and its sentence, in a 422's `details.fields`. */
-export type Field = { path: string; message: string }
+export type ErrorKind = "network" | "db" | "internal" | "validation"
 
-/** An error the API answers, in the Plat5 envelope (plat5 docs/reference/errors.md). */
+export type FieldError = { path: string; message: string }
+
+/** An API error formatted in the Plat5 error envelope (plat5 docs/reference/errors.md). */
 export class ApiError extends Error {
   readonly type: string
   readonly code: string
@@ -42,13 +42,9 @@ export class ApiError extends Error {
   }
 }
 
-/** The 422 sentence when nothing more specific applies. */
-export const FALLBACK_VALIDATION = "That doesn't look right."
+export const errorMessage = (err: unknown): string =>
+  err instanceof Error ? err.message : String(err)
 
-/**
- * A 400: a request malformed before its values are read, such as a body not sent as JSON,
- * or a create without the `X-Plat5-Member-Id` the API requires of the front door.
- */
 export const invalidRequest = (): ApiError =>
   new ApiError({
     type: "invalid_request_error",
@@ -57,19 +53,17 @@ export const invalidRequest = (): ApiError =>
     status: 400
   })
 
-/** A 422 listing `fields`, the first one's sentence its message. */
-export const validationError = (fields: Field[]): ApiError =>
+export const validationError = (fields: FieldError[]): ApiError =>
   new ApiError({
     type: "invalid_request_error",
     code: "VALIDATION_ERROR",
-    message: fields[0]?.message ?? FALLBACK_VALIDATION,
+    message: fields[0]?.message ?? "Validation failed.",
     details: { fields },
     status: 422,
     kind: "validation"
   })
 
-/** A 422 for one field. No message is the fallback sentence. */
-export const fieldError = (path: string, message = FALLBACK_VALIDATION): ApiError =>
+export const fieldError = (path: string, message: string): ApiError =>
   validationError([{ path, message }])
 
 export const notFound = (resource: string, id: string | null): ApiError =>
@@ -81,7 +75,6 @@ export const notFound = (resource: string, id: string | null): ApiError =>
     status: 404
   })
 
-/** A 500. Its message is always the fallback sentence: never a framework's or a library's. */
 export const internalError = (): ApiError =>
   new ApiError({
     type: "api_error",
@@ -98,3 +91,38 @@ export const serviceUnavailable = (): ApiError =>
     status: 503,
     kind: "network"
   })
+
+/** Converts an AJV JSON pointer (`/tags/0/name`) into a dotted/indexed field path (`tags[0].name`). */
+const fieldPath = (pointer: string, key?: string): string => {
+  const base = pointer
+    .split("/")
+    .slice(1)
+    .map((s) => s.replaceAll("~1", "/").replaceAll("~0", "~"))
+    .reduce((out, s) => (/^\d+$/.test(s) ? `${out}[${s}]` : out === "" ? s : `${out}.${s}`), "")
+  return key === undefined ? base : base === "" ? key : `${base}.${key}`
+}
+
+/** Maps Fastify/AJV validation errors into a Plat5 422 VALIDATION_ERROR. */
+export const validationFailed = (
+  errors: readonly FastifySchemaValidationError[],
+  part?: string
+): ApiError => {
+  const seen = new Set<string>()
+  const fields: FieldError[] = []
+
+  for (const e of errors) {
+    const params = e.params as { additionalProperty?: string; missingProperty?: string }
+    const key = params.additionalProperty ?? params.missingProperty
+    const path = fieldPath(e.instancePath, key) || part || "body"
+    if (seen.has(path)) continue
+    seen.add(path)
+
+    const message =
+      e.keyword === "additionalProperties" && params.additionalProperty !== undefined
+        ? `must NOT have additional property '${params.additionalProperty}'`
+        : (e.message ?? "Invalid value.")
+    fields.push({ path, message })
+  }
+
+  return validationError(fields)
+}
