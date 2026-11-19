@@ -95,7 +95,7 @@ src/
   profiles.ts     # User profile routes & SQLite store
 plat5.yml         # Deployment config (kinds, roles, rate limits, services)
 services/         # Service route definitions (api, identity, audit)
-plat5.dev.yml     # Local dev stack configuration
+plat5.local.yml   # Local dev stack configuration
 ```
 
 ## Docker
