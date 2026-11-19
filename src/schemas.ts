@@ -14,7 +14,7 @@ export const LOWERCASE_ULID = "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
 
 const STATUS = "Status must be todo, in progress, or done."
 
-/** The sentences for a task's body (plat5 docs/reference/error-copy.md). */
+/** The sentences for a task's body. */
 export const taskMessages: Messages = {
   title: {
     required: "Title is required.",

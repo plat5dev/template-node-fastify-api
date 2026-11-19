@@ -149,52 +149,33 @@ test("an invalid telemetry value stops the API at boot, naming the variable", ()
   )
 })
 
-// service.version: OTEL_SERVICE_VERSION, then OTEL_RESOURCE_ATTRIBUTES, then the build's
-// VERSION, which is dev without one. CI_COMMIT_TAG plays no part.
-test("service.version: the build's VERSION, else dev; the variables override it", () => {
+// service.version: OTEL_RESOURCE_ATTRIBUTES, then the build's VERSION (dev without one).
+test("service.version: the build's VERSION, else dev; OTEL_RESOURCE_ATTRIBUTES overrides it", () => {
   const ci = { CI_COMMIT_TAG: "v9.9.9" }
   assert.equal(withOtel(ci).resource["service.version"], "dev")
   assert.equal(serviceResource({}, "v1.2.3")["service.version"], "v1.2.3")
   const bag = { OTEL_RESOURCE_ATTRIBUTES: "service.version=v2.0.0" }
   assert.equal(serviceResource(bag, "v1.2.3")["service.version"], "v2.0.0")
   assert.equal(withOtel({ ...ci, ...bag }).resource["service.version"], "v2.0.0")
-  const own = { ...bag, OTEL_SERVICE_VERSION: "v3.0.0" }
-  assert.equal(serviceResource(own, "v1.2.3")["service.version"], "v3.0.0")
-  assert.equal(withOtel({ ...ci, ...own }).resource["service.version"], "v3.0.0")
 })
 
-test("the resource: defaults, then OTEL_RESOURCE_ATTRIBUTES and OTEL_SERVICE_NAME, then the convenience variables", () => {
+test("the resource: defaults, then OTEL_RESOURCE_ATTRIBUTES and OTEL_SERVICE_NAME", () => {
   const bag = withOtel({
     HOSTNAME: "host-1",
     OTEL_RESOURCE_ATTRIBUTES:
-      "service.name=bag,service.namespace=edge,service.instance.id=i-1,team=a%20b"
+      "service.name=bag,service.namespace=edge,service.instance.id=i-1,deployment.environment=staging,team=a%20b"
   })
   assert.deepEqual(bag.resource, {
     "service.name": "bag",
     "service.namespace": "edge",
     "service.instance.id": "i-1",
     "service.version": "dev",
-    "deployment.environment": "development",
+    "deployment.environment": "staging",
     team: "a b"
   })
-  const vars = withOtel({
-    OTEL_RESOURCE_ATTRIBUTES: "service.name=bag,service.namespace=edge,deployment.environment=bag",
-    OTEL_SERVICE_NAME: "named",
-    OTEL_SERVICE_NAMESPACE: "ns",
-    OTEL_SERVICE_INSTANCE_ID: "i-2",
-    DEPLOYMENT_ENV: "staging"
+  const named = withOtel({
+    OTEL_RESOURCE_ATTRIBUTES: "service.name=bag",
+    OTEL_SERVICE_NAME: "named"
   })
-  assert.deepEqual(vars.resource, {
-    "service.name": "named",
-    "service.namespace": "ns",
-    "service.instance.id": "i-2",
-    "service.version": "dev",
-    "deployment.environment": "staging"
-  })
-  assert.equal(
-    withOtel({ DEPLOYMENT_ENV: "staging", OTEL_DEPLOYMENT_ENV: "prod" }).resource[
-      "deployment.environment"
-    ],
-    "prod"
-  )
+  assert.equal(named.resource["service.name"], "named")
 })

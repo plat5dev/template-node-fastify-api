@@ -44,9 +44,8 @@ const resourceAttributes = (raw: string | undefined): Record<string, string> => 
 }
 
 /**
- * The resource (plat5 docs/reference/telemetry.md#resource-identity), layered: the service's
- * defaults (the build's `version` among them), then OTEL_RESOURCE_ATTRIBUTES and
- * OTEL_SERVICE_NAME, then the convenience variables that are set.
+ * The resource, layered: the service's defaults (the build's `version` among them),
+ * then standard OTEL_RESOURCE_ATTRIBUTES and OTEL_SERVICE_NAME.
  */
 export const serviceResource = (env: Env, version: string): Record<string, string> => {
   const get = (name: string) => optional(env, name)
@@ -58,15 +57,8 @@ export const serviceResource = (env: Env, version: string): Record<string, strin
     "deployment.environment": "development",
     ...resourceAttributes(get("OTEL_RESOURCE_ATTRIBUTES"))
   }
-  const overrides = {
-    "service.name": get("OTEL_SERVICE_NAME"),
-    "service.namespace": get("OTEL_SERVICE_NAMESPACE"),
-    "service.version": get("OTEL_SERVICE_VERSION"),
-    "service.instance.id": get("OTEL_SERVICE_INSTANCE_ID"),
-    "deployment.environment": get("OTEL_DEPLOYMENT_ENV") ?? get("DEPLOYMENT_ENV")
-  }
-  for (const [key, value] of Object.entries(overrides))
-    if (value !== undefined) resource[key] = value
+  const serviceName = get("OTEL_SERVICE_NAME")
+  if (serviceName !== undefined) resource["service.name"] = serviceName
   return resource
 }
 

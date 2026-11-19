@@ -42,8 +42,6 @@ export class ApiError extends Error {
   }
 }
 
-// Each fallback sentence is plat5 docs/reference/error-copy.md's.
-
 /** The 422 sentence when nothing more specific applies. */
 export const FALLBACK_VALIDATION = "That doesn't look right."
 
