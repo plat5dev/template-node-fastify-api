@@ -22,7 +22,7 @@ export type AppDeps = {
   tasks: TasksStore
   profiles: ProfilesStore
   access: AccessClient
-  assigneePermission: string
+  assigneePermission?: string
   version: string
   observeRequest?: RequestObserver
   /** Optional Pino output stream (used by tests to capture structured JSON logs). */

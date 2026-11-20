@@ -36,7 +36,7 @@ Plat5 handles authentication and authorization at its gateway. This service owns
 
 ## Identity integrations
 
-- **Assignee access check (`src/access.ts`):** When a task sets a non-null `assignee_id`, the API calls `POST {IDENTITY_INTERNAL_URL}/access/v1/evaluation` for `TASK_ASSIGNEE_PERMISSION` on `project`, forwarding `X-Request-ID` and `traceparent` from the active OTel context. Denied → `422`; unavailable or unset → fail-closed `503` ([`docs/reference/api/internal.md`](https://github.com/plat5dev/plat5/blob/master/docs/reference/api/internal.md)).
+- **Assignee access check (`src/access.ts`):** When a task sets a non-null `assignee_id`, the API calls `POST {IDENTITY_INTERNAL_URL}/access/v1/evaluation` for `ASSIGNEE_PERMISSION` (`project:read` in `src/tasks.ts`) on `project`, forwarding `X-Request-ID` and `traceparent` from the active OTel context. Denied → `422`; unavailable or unset → fail-closed `503` ([`docs/reference/api/internal.md`](https://github.com/plat5dev/plat5/blob/master/docs/reference/api/internal.md)).
 - **Lifecycle consumer (`src/lifecycle.ts`):** Polls `GET {IDENTITY_INTERNAL_URL}/internal/events?types=node.purged,user.deleted&limit=100` to delete purged projects' tasks and deleted users' profiles atomically with the SQLite cursor in `feed_cursors`, resetting on `409 CURSOR_AHEAD` ([`docs/concepts/lifecycle.md`](https://github.com/plat5dev/plat5/blob/master/docs/concepts/lifecycle.md)).
 
 ## Running
@@ -50,16 +50,16 @@ Or run the API locally outside Docker against the local Plat5 stack:
 ```bash
 plat5 start -x app
 npm install
-TASK_ASSIGNEE_PERMISSION=project:read npm run dev
+npm run dev
 ```
 
 Commands:
 
 ```bash
-TASK_ASSIGNEE_PERMISSION=project:read npm run dev   # node --watch (reads .env if present)
-TASK_ASSIGNEE_PERMISSION=project:read npm start     # node src/main.ts
-npm run check                                       # TypeScript type check
-npm test                                            # node:test suite
+npm run dev    # node --watch (reads .env if present)
+npm start      # node src/main.ts
+npm run check  # TypeScript type check
+npm test       # node:test suite
 ```
 
 ## Environment
@@ -72,7 +72,6 @@ See `.env.example`.
 | `INTERNAL_PORT` | `3001` | `/health/live`, `/health/ready`, `/metrics` |
 | `DATABASE_PATH` | `./data/app.db` | SQLite database file |
 | `IDENTITY_INTERNAL_URL` | unset | Identity internal URL (lifecycle feed + assignee check) |
-| `TASK_ASSIGNEE_PERMISSION` | **required** | Permission checked for task assignees (starter: `project:read`) |
 | `APP_VERSION` | `dev` | Service version in OpenAPI and OTel resource |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Enables OTLP traces & metrics push; standard `OTEL_*` vars are read by the OTel SDK ([`docs/reference/telemetry.md`](https://github.com/plat5dev/plat5/blob/master/docs/reference/telemetry.md)) |
 

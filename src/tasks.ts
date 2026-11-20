@@ -71,10 +71,13 @@ export const tasksStore = (db: Db) => {
 
 export type TasksStore = ReturnType<typeof tasksStore>
 
+/** Permission a task's assignee must hold on the project (matches services/api.yml). */
+export const ASSIGNEE_PERMISSION = "project:read"
+
 export type TaskRoutesOptions = {
   store: TasksStore
   access: AccessClient
-  assigneePermission: string
+  assigneePermission?: string
 }
 
 // Monotonic ULIDs preserve creation order within the same millisecond.
@@ -93,7 +96,7 @@ const requireMember = async (req: FastifyRequest) => {
 
 export const taskRoutes: FastifyPluginAsyncTypebox<TaskRoutesOptions> = async (
   app,
-  { store, access, assigneePermission }
+  { store, access, assigneePermission = ASSIGNEE_PERMISSION }
 ) => {
   const checkAssignee = async (req: FastifyRequest, projectId: string, assigneeId: string) => {
     const allowed = await access

@@ -21,7 +21,6 @@ const app = await buildApp({
   tasks,
   profiles,
   access: accessClient(config.identityInternalUrl),
-  assigneePermission: config.taskAssigneePermission,
   version: config.version,
   observeRequest: telemetry.observeRequest
 })

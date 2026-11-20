@@ -22,4 +22,4 @@ app:
 # To run the API on your own machine instead: plat5 start -x app, then
 next:
   - npm install
-  - TASK_ASSIGNEE_PERMISSION=project:read npm run dev
+  - npm run dev

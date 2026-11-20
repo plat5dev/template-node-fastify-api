@@ -6,15 +6,11 @@ export type AppConfig = {
   readonly databasePath: string
   /** Identity's internal base URL (trailing slash stripped), or undefined when unset. */
   readonly identityInternalUrl: string | undefined
-  /** Permission a task's assignee must hold on the task's project. */
-  readonly taskAssigneePermission: string
   /** OTLP collector base URL when set; OTel SDK reads all other OTEL_* env vars natively. */
   readonly otlpEndpoint: string | undefined
   /** Service version reported in OpenAPI and OTel resource attributes. */
   readonly version: string
 }
-
-const PERMISSION_NAME = /^[a-z0-9:._-]{1,64}$/
 
 const optional = (env: Env, name: string): string | undefined => env[name]?.trim() || undefined
 
@@ -38,21 +34,11 @@ const parseHttpUrl = (env: Env, name: string): string | undefined => {
   return raw.replace(/\/+$/, "")
 }
 
-export const loadConfig = (env: Env = process.env): AppConfig => {
-  const taskAssigneePermission = env.TASK_ASSIGNEE_PERMISSION
-  if (taskAssigneePermission === undefined || !PERMISSION_NAME.test(taskAssigneePermission)) {
-    throw new Error(
-      "TASK_ASSIGNEE_PERMISSION is required and must match [a-z0-9:._-]{1,64} (e.g. project:read)"
-    )
-  }
-
-  return {
-    port: parsePort(env, "PORT", 3000),
-    internalPort: parsePort(env, "INTERNAL_PORT", 3001),
-    databasePath: optional(env, "DATABASE_PATH") ?? "./data/app.db",
-    identityInternalUrl: parseHttpUrl(env, "IDENTITY_INTERNAL_URL"),
-    taskAssigneePermission,
-    otlpEndpoint: parseHttpUrl(env, "OTEL_EXPORTER_OTLP_ENDPOINT"),
-    version: optional(env, "APP_VERSION") ?? "dev"
-  }
-}
+export const loadConfig = (env: Env = process.env): AppConfig => ({
+  port: parsePort(env, "PORT", 3000),
+  internalPort: parsePort(env, "INTERNAL_PORT", 3001),
+  databasePath: optional(env, "DATABASE_PATH") ?? "./data/app.db",
+  identityInternalUrl: parseHttpUrl(env, "IDENTITY_INTERNAL_URL"),
+  otlpEndpoint: parseHttpUrl(env, "OTEL_EXPORTER_OTLP_ENDPOINT"),
+  version: optional(env, "APP_VERSION") ?? "dev"
+})
